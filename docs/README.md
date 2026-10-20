@@ -1,12 +1,6 @@
----
-type: overview
-updated: 2026-10-20
----
+# Documentation
 
-# Contributor documentation
-
-- [Development status and target boundaries](development.md)
-- [Pinned sources and patch preservation](patching.md)
-
-These guides are self-contained in a standalone repository clone. They describe
-a port in progress, not a released application.
+- [Download and installation](../README.md)
+- [Building](development.md)
+- [Patch workflow](patching.md)
+- [Current release](https://github.com/tomaszstaniak/aros-gridcraft/releases/tag/v0.8.0-test1-r2)

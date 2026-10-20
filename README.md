@@ -1,22 +1,21 @@
 # GridCraft for AROS
 
-A port of [GridCraft](https://github.com/storytold/gridcraft), a spreadsheet
-program written in Rust, to AROS x86_64 ABIv11, with mainline v1 retained as a
-secondary target.
+An AROS port of [GridCraft](https://github.com/storytold/gridcraft), a spreadsheet. It opens and saves XLSX workbooks, imports XLS, XLSB, ODS, CSV and JSON, and exports CSV, HTML and PDF.
 
-The repository holds the source pins, the patch series and the build tooling,
-not a source checkout. The pinned source is GridCraft `823c5658` (tag v0.8.0).
-The spreadsheet runs in a native Intuition window (`apps/gridcraft-aros`, added by
-the series) on [egui-aros](https://github.com/tomaszstaniak/egui-aros), the shared AROS window, input and renderer layer of
-the ArtCraft ports, pinned in `upstreams.json`.
+## Download and run
 
-Status: the spreadsheet (`GridCraft`) and `gridcraft-cli` (with the MCP server over
-stdio) build for x86_64 ABIv11 and have been run on an ABIv11 guest. Mainline
-v1 is not built. Details and the exact tested scope:
-[development](docs/development.md). Patch handling: [patching](docs/patching.md).
+[Download v0.8.0-test1-r2](https://github.com/tomaszstaniak/aros-gridcraft/releases/tag/v0.8.0-test1-r2) for **AROS x86_64 ABIv11**, or find `gridcraft` in the apkg catalogue. The download includes GridCraft and `gridcraft-cli`.
 
-[upstreams.json](upstreams.json) identifies the sources;
-[patches/gridcraft/series](patches/gridcraft/series) the changes to GridCraft;
-`patches/crates`, `patches/libc-aros` and `patches/aros-pthread` the changes to
-dependencies. `packaging/` holds the test packages' recipes. Generated
-checkouts and outputs are ignored.
+These builds are experimental and not optimised. They use CPU rendering and can be slow, especially in large windows.
+
+Unpack the archive into a drawer and double-click the GridCraft icon. From a Shell, run `Stack 4000000` before starting `GridCraft`.
+
+## Known limitations
+
+**Save before closing the window:** the close gadget does not ask about unsaved changes. File › Close does. Printing, formatted clipboard exchange and file drops are unavailable. Non-Latin-1 keyboard layouts can produce incorrect characters.
+
+## Build from source
+
+This repository contains source revisions, AROS patches and build scripts. See [Building](docs/development.md), [Patch workflow](docs/patching.md) and [Source revisions](upstreams.json). The window and renderer use [egui-aros](https://github.com/tomaszstaniak/egui-aros), pinned in `upstreams.json`.
+
+The repository stores build recipes rather than a full upstream source tree. Licenses and author notices are included in the source and application archives.
