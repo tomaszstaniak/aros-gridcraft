@@ -1,0 +1,5 @@
+0001-Lock-libc-0.2.189-for-the-AROS-libc-replacement.patch
+0002-gridcraft-cli-own-stack-on-AROS.patch
+0003-Add-gridcraft-aros-the-spreadsheet-in-an-Intuition-w.patch
+0004-gridcraft-aros-sleep-until-there-is-something-to-do-.patch
+0005-gridcraft-aros-screenshot-draws-frames-until-the-pic.patch

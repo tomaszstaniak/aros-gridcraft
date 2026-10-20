@@ -1,0 +1,32 @@
+; GridCraft GUI screenshot runs RUN: three starts in a row, memory around them.
+; Results: RESULTS:RUN-*
+FailAt 21
+Protect RAM:gc/GridCraft +e
+Stack 4000000
+SetEnv RUST_LOG info
+SetEnv GRIDCRAFT_CONFIG_DIR RAM:gc/data
+Echo "RUN start" >RESULTS:RUN-start.txt
+Avail FLUSH >RESULTS:RUN-avail0.txt
+Date >RESULTS:RUN-date1.txt
+SetEnv GRIDCRAFT_LOG RAM:gc/log-1.txt
+RAM:gc/GridCraft --screenshot RAM:gc/shot1.png --screenshot-frames 8 RAM:gc/hello.xlsx
+Echo $RC >RESULTS:RUN-shot1.rc
+Date >RESULTS:RUN-date2.txt
+Avail FLUSH >RESULTS:RUN-avail1.txt
+SetEnv GRIDCRAFT_LOG RAM:gc/log-2.txt
+RAM:gc/GridCraft --screenshot RAM:gc/shot2.png --screenshot-frames 8 --window 800x560
+Echo $RC >RESULTS:RUN-shot2.rc
+Avail FLUSH >RESULTS:RUN-avail2.txt
+SetEnv GRIDCRAFT_LOG RAM:gc/log-3.txt
+RAM:gc/GridCraft --screenshot RAM:gc/shot3.png --screenshot-frames 8 RAM:gc/hello.xlsx
+Echo $RC >RESULTS:RUN-shot3.rc
+Date >RESULTS:RUN-date3.txt
+Avail FLUSH >RESULTS:RUN-avail3.txt
+List RAM:gc/data ALL >RESULTS:RUN-data.txt
+Copy RAM:gc/shot1.png RESULTS:RUN-shot1.png
+Copy RAM:gc/shot2.png RESULTS:RUN-shot2.png
+Copy RAM:gc/shot3.png RESULTS:RUN-shot3.png
+Copy RAM:gc/log-1.txt RESULTS:RUN-log-1.txt
+Copy RAM:gc/log-2.txt RESULTS:RUN-log-2.txt
+Copy RAM:gc/log-3.txt RESULTS:RUN-log-3.txt
+Echo "RUN shot done" >RESULTS:RUN-shot-done.txt

@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 12:39:05 +0200
+Subject: [PATCH] gridcraft-aros: --screenshot draws frames until the picture
+ is taken
+
+Problem: --screenshot counts frames before it writes the window's pixels,
+  and since the shell has no idle poll an untouched window draws none
+  after it settles; the screenshot runs of run k3 waited until input came.
+Rationale: while a screenshot is pending the shell asks for a repaint in
+  every frame.
+Scope: --screenshot only.
+Upstream-status: local-only.
+Verification: unattended screenshot runs in the port's evidence.
+Removal: with the shell.
+---
+ apps/gridcraft-aros/src/main.rs | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/apps/gridcraft-aros/src/main.rs b/apps/gridcraft-aros/src/main.rs
+index 63673f4dc9cbef615dca83473320161fa5837d8b..d8c98d9bdc6f18cd63688d58cad5482b136dc8b9 100644
+--- a/apps/gridcraft-aros/src/main.rs
++++ b/apps/gridcraft-aros/src/main.rs
+@@ -256,6 +256,11 @@ impl egui_aros::App for Shell {
+     }
+ 
+     fn logic(&mut self, ctx: &egui::Context) {
++        // --screenshot counts frames, and with no idle poll an untouched window draws none after
++        // it settles: keep drawing until the picture is taken.
++        if self.screenshot.is_some() && !self.done {
++            ctx.request_repaint();
++        }
+         self.app.logic(ctx);
+         self.app.poll_printing(ctx);
+     }

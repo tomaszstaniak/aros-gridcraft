@@ -1,0 +1,32 @@
+; GridCraft CLI smoke, run RUN. Results: RESULTS:RUN-*
+FailAt 21
+Protect RAM:gc/gridcraft-cli +e
+List RAM:gc >RESULTS:RUN-list.txt
+Echo "RUN start" >RESULTS:RUN-start.txt
+RAM:gc/gridcraft-cli version >RESULTS:RUN-version.txt
+Echo $RC >RESULTS:RUN-version.rc
+RAM:gc/gridcraft-cli info RAM:gc/hello.xlsx >RESULTS:RUN-info.txt
+Echo $RC >RESULTS:RUN-info.rc
+RAM:gc/gridcraft-cli cat RAM:gc/hello.xlsx >RESULTS:RUN-cat.txt
+Echo $RC >RESULTS:RUN-cat.rc
+RAM:gc/gridcraft-cli cat RAM:gc/hello.xlsx --formulas >RESULTS:RUN-catf.txt
+Echo $RC >RESULTS:RUN-catf.rc
+RAM:gc/gridcraft-cli eval "=SUM(1,2)**3" >RESULTS:RUN-eval.txt
+Echo $RC >RESULTS:RUN-eval.rc
+RAM:gc/gridcraft-cli convert RAM:gc/hello.xlsx RAM:gc/out.csv >RESULTS:RUN-csv.txt
+Echo $RC >RESULTS:RUN-csv.rc
+RAM:gc/gridcraft-cli run --in RAM:gc/hello.xlsx --cmd "cell.set={*"cell*":*"A2*",*"input*":*"10*"}" --out RAM:gc/edited.xlsx --quiet >RESULTS:RUN-run.txt
+Echo $RC >RESULTS:RUN-run.rc
+; Save over the file just written: an existing destination must be replaced.
+RAM:gc/gridcraft-cli run --in RAM:gc/edited.xlsx --cmd "cell.set={*"cell*":*"D2*",*"input*":*"=C2**2*"}" --out RAM:gc/edited.xlsx --quiet >RESULTS:RUN-run2.txt
+Echo $RC >RESULTS:RUN-run2.rc
+RAM:gc/gridcraft-cli cat RAM:gc/edited.xlsx >RESULTS:RUN-cat2.txt
+Echo $RC >RESULTS:RUN-cat2.rc
+RAM:gc/gridcraft-cli check RAM:gc/edited.xlsx >RESULTS:RUN-check.txt
+Echo $RC >RESULTS:RUN-check.rc
+RAM:gc/gridcraft-cli mcp <RAM:gc/mcp-in.txt >RESULTS:RUN-mcp.txt
+Echo $RC >RESULTS:RUN-mcp.rc
+Copy RAM:gc/out.csv RESULTS:RUN-out.csv
+Copy RAM:gc/edited.xlsx RESULTS:RUN-edited.xlsx
+List RAM:gc >RESULTS:RUN-list2.txt
+Echo "RUN done" >RESULTS:RUN-done.txt

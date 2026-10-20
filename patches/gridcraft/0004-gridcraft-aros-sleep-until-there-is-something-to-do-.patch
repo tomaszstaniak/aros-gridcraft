@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 12:01:12 +0200
+Subject: [PATCH] gridcraft-aros: sleep until there is something to do;
+ per-frame log at debug level, input trace
+
+Problem: the shell asked egui-aros for an idle poll every 500 ms, and each
+  poll is a full frame, which the CPU renderer pays for in full. With the
+  window untouched QEMU used about 19 (DeckCraft) and 11 (GridCraft)
+  CPU-seconds per 30 seconds on pool v11-2 under TCG, against 0.9 for the
+  bare desktop (run k2).
+Rationale: as eframe on the desktop, the loop now sleeps until input, a
+  repaint the app asks for (it does so while a background open or a timed
+  message is pending) or a wake-up from another thread. With RUST_LOG=debug
+  every frame logs what woke the loop and what the frame cost, so idle
+  behaviour can be checked from the log. GRIDCRAFT_TRACE_INPUT logs every
+  frame's key and text events and the focused widget (the in-cell editor
+  lost typed characters in run k2).
+Scope: the AROS shell only.
+Upstream-status: local-only.
+Verification: idle CPU measured again in the port's evidence.
+Removal: with the shell.
+---
+ apps/gridcraft-aros/src/main.rs | 33 +++++++++++++++++++++++++++------
+ 1 file changed, 27 insertions(+), 6 deletions(-)
+
+diff --git a/apps/gridcraft-aros/src/main.rs b/apps/gridcraft-aros/src/main.rs
+index 3c7ab3cd5b31f311b0ed559467f024889d549a71..63673f4dc9cbef615dca83473320161fa5837d8b 100644
+--- a/apps/gridcraft-aros/src/main.rs
++++ b/apps/gridcraft-aros/src/main.rs
+@@ -19,13 +19,9 @@ use std::cell::RefCell;
+ use std::path::PathBuf;
+ use std::rc::Rc;
+ use std::sync::Mutex;
+-use std::time::Duration;
+ 
+ use gridcraft_ui_egui::SheetApp;
+ 
+-/// Longest sleep when nothing asks for a repaint: background work (the font scan, the recent
+-/// files' dates) still gets its turn.
+-const IDLE_POLL: Duration = Duration::from_millis(500);
+ 
+ struct Logger;
+ 
+@@ -232,6 +228,9 @@ struct Shell {
+     shared_window: services::SharedWindow,
+     screenshot: Option<(String, u64)>,
+     done: bool,
++    /// GRIDCRAFT_TRACE_INPUT: log every frame's key and text events and the focused widget, to
++    /// tell lost input from input that reached the wrong widget.
++    trace_input: bool,
+ }
+ 
+ impl egui_aros::App for Shell {
+@@ -246,6 +245,13 @@ impl egui_aros::App for Shell {
+     }
+ 
+     fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
++        if self.trace_input {
++            for e in &raw.events {
++                if matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Ime(_) | egui::Event::Paste(_)) {
++                    log::info!("input: {e:?}");
++                }
++            }
++        }
+         self.app.raw_input_hook(raw);
+     }
+ 
+@@ -256,6 +262,11 @@ impl egui_aros::App for Shell {
+ 
+     fn ui(&mut self, ui: &mut egui::Ui) {
+         self.app.ui(ui);
++        if self.trace_input {
++            let focused = ui.ctx().memory(|m| m.focused());
++            let editor = self.app.editor.as_ref().map(|e| (e.text.clone(), e.request_focus, e.from_formula_bar));
++            log::info!("frame: focused {focused:?}, editor {editor:?}");
++        }
+     }
+ 
+     fn quit_requested(&self) -> bool {
+@@ -263,6 +274,12 @@ impl egui_aros::App for Shell {
+     }
+ 
+     fn frame_done(&mut self, report: &egui_aros::FrameReport, renderer: &egui_aros::raster::Renderer) {
++        // RUST_LOG=debug: one line per frame, to see what woke the loop and what the frame cost.
++        log::debug!(
++            "frame {} {}x{}: slept {:?} (timeout {:?}, by timeout {}), late {:?}, events {}, logic {:?} ui {:?} tessellate {:?} raster {:?} present {:?}, next repaint {:?}",
++            report.frame, report.width, report.height, report.waited, report.wait_timeout, report.woke_by_timeout, report.repaint_late,
++            report.events, report.logic, report.ui, report.tessellate, report.raster, report.present, report.next_repaint
++        );
+         if let Some((path, frames)) = &self.screenshot
+             && report.frame >= *frames
+         {
+@@ -284,13 +301,17 @@ fn run(options: Options) -> i32 {
+     let shared_window: services::SharedWindow = Rc::new(RefCell::new(None));
+     let app = new_app(shared_window.clone(), &options);
+     SheetApp::setup_context_for_language(&ctx, app.ui.dark, app.ui.language);
+-    let mut shell = Shell { app, shared_window, screenshot: options.screenshot.clone().map(|p| (p, options.screenshot_frames)), done: false };
++    let mut shell = Shell { app, shared_window, screenshot: options.screenshot.clone().map(|p| (p, options.screenshot_frames)), done: false, trace_input: std::env::var_os("GRIDCRAFT_TRACE_INPUT").is_some() };
+     let run_options = egui_aros::Options {
+         title: "GridCraft".to_owned(),
+         inner_size: (w, h),
+         min_inner_size: Some((640, 420)),
+         clear_color: [0xf3, 0xf3, 0xf3],
+-        idle_poll: Some(IDLE_POLL),
++        // No idle poll: as eframe on the desktop, the loop sleeps until input, a repaint the app
++        // asks for (it does while it waits for a background open or shows a timed message), or a
++        // wake-up from another thread. A poll is a full frame, which the CPU renderer pays for in
++        // full: every 500 ms kept QEMU busy at over half a core with the window untouched.
++        idle_poll: None,
+         measure_paint: false,
+         // A build drawing with OpenGL says so in the title, so a screenshot names the variant.
+         title_suffix: if cfg!(feature = "glow") { " [GL]".to_owned() } else { String::new() },

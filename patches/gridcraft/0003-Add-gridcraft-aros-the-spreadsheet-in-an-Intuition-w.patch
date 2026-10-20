@@ -1,0 +1,528 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 11:16:08 +0200
+Subject: [PATCH] Add gridcraft-aros: the spreadsheet in an Intuition window on
+ egui-aros
+
+Problem: the desktop app runs on eframe with wgpu, rfd, arboard and
+  craft-print, none of which has an AROS backend, so there is no GridCraft
+  window on AROS.
+Rationale: the spreadsheet (gridcraft-ui-egui's SheetApp) is driven by the
+  shared egui-aros integration (winit's contrib AROS backend, egui-winit,
+  a CPU renderer, ASL requesters), as in the WordCraft, PhotoCraft and
+  PdfCraft AROS ports; this crate only supplies GridCraft's services (ASL
+  open, picture and save requesters with the desktop app's filters and
+  save types, the clipboard's text for Paste, links through OpenURL with
+  the desktop app's http/https/mailto rule), the settings folder
+  (PROGDIR:GridCraftData or GRIDCRAFT_CONFIG_DIR, since AROS has no HOME),
+  a log file (GRIDCRAFT_LOG) and a --screenshot option for unattended
+  checks. The desktop theme watcher is not started: AROS has no desktop
+  theme, and its polling thread would keep the pthread library's exit
+  handler waiting.
+Not provided, reported as unavailable rather than faked: --control (the
+  localhost control server), printing (no printers are offered), HTML on
+  the clipboard (copy and paste use plain text), files dropped on the
+  window.
+Scope: a new workspace member, not a default member; other targets build
+  as before. Its egui-aros dependency resolves only through the port's
+  build (scripts/gc.py patches the pinned egui-aros in); the Cargo.lock
+  entries for it are written into the build copy, not here.
+Upstream-status: local-only.
+Verification: x86_64 ABIv11 build links with no undefined symbols; runs
+  in the port's evidence.
+Removal: when GridCraft's desktop app runs on AROS by itself.
+---
+ apps/gridcraft-aros/Cargo.toml      |  32 +++
+ apps/gridcraft-aros/src/main.rs     | 317 ++++++++++++++++++++++++++++
+ apps/gridcraft-aros/src/services.rs | 119 +++++++++++
+ 3 files changed, 468 insertions(+)
+ create mode 100644 apps/gridcraft-aros/Cargo.toml
+ create mode 100644 apps/gridcraft-aros/src/main.rs
+ create mode 100644 apps/gridcraft-aros/src/services.rs
+
+diff --git a/apps/gridcraft-aros/Cargo.toml b/apps/gridcraft-aros/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..b57e7f10b08534a845a065a28d5e3182c8677264
+--- /dev/null
++++ b/apps/gridcraft-aros/Cargo.toml
+@@ -0,0 +1,32 @@
++[package]
++name = "gridcraft-aros"
++description = "GridCraft on AROS: the egui interface drawn into an Intuition window"
++version.workspace = true
++edition.workspace = true
++license.workspace = true
++publish = false
++
++# The window, input, rendering and the AROS services come from egui-aros (shared with the
++# WordCraft, PhotoCraft and PdfCraft AROS ports); this crate has no `unsafe` code of its own.
++[lints]
++workspace = true
++
++[features]
++# Draw with OpenGL (gl.library) instead of the CPU renderer; the build needs gl.library to start.
++glow = ["egui-aros/glow"]
++
++[[bin]]
++name = "GridCraft"
++path = "src/main.rs"
++
++[dependencies]
++gridcraft-engine = { workspace = true }
++gridcraft-ui-egui = { workspace = true }
++egui = { workspace = true, features = ["default_fonts"] }
++# Built from a pinned egui-aros commit with its crate patches: see the port's scripts/gc.py.
++egui-aros = { version = "0.1", features = ["asl"] }
++serde_json = { workspace = true }
++log = { workspace = true }
++# --screenshot writes PNG.
++image = { workspace = true }
++
+diff --git a/apps/gridcraft-aros/src/main.rs b/apps/gridcraft-aros/src/main.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3c7ab3cd5b31f311b0ed559467f024889d549a71
+--- /dev/null
++++ b/apps/gridcraft-aros/src/main.rs
+@@ -0,0 +1,317 @@
++//! GridCraft on AROS.
++//!
++//! Usage: `GridCraft [--sample <name>] [--window <w>x<h>] [--screenshot <file.png> [--screenshot-frames <n>]] [files…]`
++//!
++//! The egui interface (`gridcraft-ui-egui`) runs in an Intuition window through egui-aros: winit
++//! and egui-winit for the window and input, a CPU renderer for the pixels, ASL for files. The
++//! engine, workbooks and file formats are the same as on the other platforms; this file and
++//! `services` follow the desktop app (apps/gridcraft/src/main.rs). Not here: the localhost
++//! control server (`--control`), printing, HTML on the clipboard and files dropped on the window.
++//!
++//! `--screenshot <file>` writes the window's pixels after `--screenshot-frames` frames (20 by
++//! default) and quits: a way to look at the interface where no display can be watched.
++//! `--window` sets the inner size. `GRIDCRAFT_LOG=<file>` appends the log there.
++#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
++
++mod services;
++
++use std::cell::RefCell;
++use std::path::PathBuf;
++use std::rc::Rc;
++use std::sync::Mutex;
++use std::time::Duration;
++
++use gridcraft_ui_egui::SheetApp;
++
++/// Longest sleep when nothing asks for a repaint: background work (the font scan, the recent
++/// files' dates) still gets its turn.
++const IDLE_POLL: Duration = Duration::from_millis(500);
++
++struct Logger;
++
++impl log::Log for Logger {
++    fn enabled(&self, metadata: &log::Metadata) -> bool {
++        metadata.level() <= log::max_level()
++    }
++
++    fn log(&self, record: &log::Record) {
++        if self.enabled(record.metadata()) {
++            log_line(&format!("gridcraft: {} {}: {}", record.level(), record.target(), record.args()));
++        }
++    }
++
++    fn flush(&self) {}
++}
++
++static LOGGER: Logger = Logger;
++
++/// `GRIDCRAFT_LOG`: a file the log (and a panic's message) is appended to instead of the
++/// console. A program started from Workbench has no console, and the AROS Shell cannot redirect
++/// a command's error output, so without it nothing of a failure can be read afterwards.
++static LOG_FILE: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
++
++fn log_line(line: &str) {
++    use std::io::Write;
++    let file = LOG_FILE.get_or_init(|| {
++        let path = std::env::var_os("GRIDCRAFT_LOG").filter(|p| !p.is_empty())?;
++        std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(Mutex::new)
++    });
++    match file {
++        Some(file) => {
++            let mut file = file.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
++            let _ = writeln!(file, "{line}");
++            let _ = file.flush();
++        }
++        None => eprintln!("{line}"),
++    }
++}
++
++fn install_logger() {
++    let level = match std::env::var("RUST_LOG").ok().as_deref().map(str::trim) {
++        Some("trace") => log::LevelFilter::Trace,
++        Some("debug") => log::LevelFilter::Debug,
++        Some("info") => log::LevelFilter::Info,
++        Some("error") => log::LevelFilter::Error,
++        Some("off") => log::LevelFilter::Off,
++        _ => log::LevelFilter::Warn,
++    };
++    // Log every panic before the default hook prints it, so it also reaches the GRIDCRAFT_LOG file.
++    let default_hook = std::panic::take_hook();
++    std::panic::set_hook(Box::new(move |info| {
++        log::error!("GridCraft internal error: {info}");
++        default_hook(info);
++    }));
++    if log::set_logger(&LOGGER).is_ok() {
++        log::set_max_level(level);
++    }
++}
++
++struct Options {
++    files: Vec<String>,
++    sample: Option<String>,
++    window: Option<(i32, i32)>,
++    screenshot: Option<String>,
++    screenshot_frames: u64,
++}
++
++const USAGE: &str = "GridCraft [--sample <name>] [--window <w>x<h>] [--screenshot <file.png> [--screenshot-frames <n>]] [files...]";
++
++fn parse_args() -> Result<Option<Options>, String> {
++    let mut o = Options { files: Vec::new(), sample: None, window: None, screenshot: None, screenshot_frames: 20 };
++    let mut args = std::env::args_os().skip(1);
++    while let Some(a) = args.next() {
++        match a.to_str() {
++            Some("--help") | Some("-h") => {
++                println!("{USAGE}");
++                return Ok(None);
++            }
++            Some("--version") | Some("-V") => {
++                println!("GridCraft {}", env!("CARGO_PKG_VERSION"));
++                return Ok(None);
++            }
++            Some("--sample") => o.sample = Some(args.next().map_or_else(|| "sales".to_owned(), |p| p.to_string_lossy().into_owned())),
++            Some(a) if a.starts_with("-psn_") => {}
++            Some("--control") => return Err("--control: the control server is not available on AROS".to_owned()),
++            Some("--window") => {
++                let v = args.next().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
++                let size = v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
++                o.window = Some(size.ok_or_else(|| format!("--window: `{v}` is not <width>x<height>"))?);
++            }
++            Some("--screenshot") => o.screenshot = args.next().map(|p| p.to_string_lossy().into_owned()),
++            Some("--screenshot-frames") => {
++                let v = args.next().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
++                o.screenshot_frames = v.parse().map_err(|_| format!("--screenshot-frames: `{v}` is not a number"))?;
++            }
++            Some(s) => o.files.push(s.to_owned()),
++            None => return Err(format!("argument is not valid text: {}", a.to_string_lossy())),
++        }
++    }
++    Ok(Some(o))
++}
++
++fn prefs_enabled() -> bool {
++    std::env::var_os("GRIDCRAFT_NO_PREFS").is_none()
++}
++
++/// The settings folder (`ui.json`, `prefs.json`). AROS has no per-user home:
++/// `GridCraftData` beside the program, like a portable install, or the folder named by
++/// GRIDCRAFT_CONFIG_DIR.
++fn config_dir() -> PathBuf {
++    std::env::var_os("GRIDCRAFT_CONFIG_DIR").filter(|d| !d.is_empty()).map_or_else(|| PathBuf::from("PROGDIR:GridCraftData"), PathBuf::from)
++}
++
++fn load_prefs(app: &mut SheetApp) {
++    if !prefs_enabled() {
++        return;
++    }
++    // First run (or a ui.json without a usable language): the system's language, as the desktop
++    // app does; English where the locale cannot be read.
++    app.ui.language = gridcraft_ui_egui::i18n::Language::system();
++    app.ui.system_theme = true;
++    let dir = config_dir();
++    if let Ok(b) = std::fs::read(dir.join("ui.json"))
++        && let Ok(ui) = serde_json::from_slice::<gridcraft_ui_egui::UiState>(&b)
++    {
++        let saved = serde_json::from_slice(&b).ok().and_then(|v| gridcraft_ui_egui::i18n::saved_language(&v));
++        let language = saved.unwrap_or(app.ui.language);
++        app.ui = ui;
++        app.ui.language = language;
++    }
++    if let Ok(b) = std::fs::read(dir.join("prefs.json"))
++        && let Ok(p) = serde_json::from_slice(&b)
++    {
++        app.session.prefs = p;
++    }
++}
++
++fn save_prefs(app: &SheetApp) {
++    if !prefs_enabled() {
++        return;
++    }
++    let dir = config_dir();
++    if let Err(e) = std::fs::create_dir_all(&dir) {
++        log::warn!("{}: {e}; settings not saved", dir.display());
++        return;
++    }
++    for (name, json) in [("ui.json", serde_json::to_vec_pretty(&app.ui)), ("prefs.json", serde_json::to_vec_pretty(&app.session.prefs))] {
++        if let Err(e) = json.map_err(std::io::Error::other).and_then(|b| std::fs::write(dir.join(name), b)) {
++            log::warn!("{name}: {e}");
++        }
++    }
++}
++
++fn main() {
++    install_logger();
++    let options = match parse_args() {
++        Ok(Some(o)) => o,
++        Ok(None) => return,
++        Err(e) => {
++            eprintln!("gridcraft: {e}");
++            exit(2);
++        }
++    };
++    log::info!("GridCraft {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
++    let code = run(options);
++    log::info!("closing: window closed");
++    exit(code);
++}
++
++/// Ends the process.
++fn exit(code: i32) -> ! {
++    log::info!("closing: exit({code})");
++    std::process::exit(code);
++}
++
++fn new_app(shared_window: services::SharedWindow, options: &Options) -> SheetApp {
++    let mut session = gridcraft_engine::Session::new();
++    if let Some(name) = &options.sample
++        && let Err(e) = session.execute("file.new", serde_json::json!({"sample": name}))
++    {
++        log::warn!("sample {name}: {e}");
++    }
++    if session.documents().is_empty() {
++        session.new_workbook();
++    }
++    let mut app = SheetApp::new(session, services::aros(shared_window));
++    // No `watch_desktop_theme`: AROS has no desktop theme to read, and its watcher thread polls
++    // for good, so the pthread library's exit handler, which joins every thread, would wait for
++    // it forever.
++    app.after_engine();
++    load_prefs(&mut app);
++    // Files named on the command line open as File › Open opens them.
++    for f in &options.files {
++        app.open_path(f);
++    }
++    app
++}
++
++/// The spreadsheet as egui-aros runs it: the desktop app's eframe `logic` and `ui`, and the
++/// screenshot hook.
++struct Shell {
++    app: SheetApp,
++    shared_window: services::SharedWindow,
++    screenshot: Option<(String, u64)>,
++    done: bool,
++}
++
++impl egui_aros::App for Shell {
++    fn started(&mut self, window: egui_aros::WindowHandle) {
++        *self.shared_window.borrow_mut() = Some(window);
++        log::info!("renderer: {}", egui_aros::renderer_name());
++    }
++
++    // --screenshot needs the frame's pixels; with OpenGL they are read back only then.
++    fn wants_pixels(&self) -> bool {
++        self.screenshot.is_some()
++    }
++
++    fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
++        self.app.raw_input_hook(raw);
++    }
++
++    fn logic(&mut self, ctx: &egui::Context) {
++        self.app.logic(ctx);
++        self.app.poll_printing(ctx);
++    }
++
++    fn ui(&mut self, ui: &mut egui::Ui) {
++        self.app.ui(ui);
++    }
++
++    fn quit_requested(&self) -> bool {
++        self.done
++    }
++
++    fn frame_done(&mut self, report: &egui_aros::FrameReport, renderer: &egui_aros::raster::Renderer) {
++        if let Some((path, frames)) = &self.screenshot
++            && report.frame >= *frames
++        {
++            match write_png(path, renderer) {
++                Ok(()) => eprintln!("gridcraft: wrote {path}"),
++                Err(e) => eprintln!("gridcraft: screenshot {path}: {e}"),
++            }
++            self.done = true;
++        }
++    }
++}
++
++fn run(options: Options) -> i32 {
++    // As large as the screen allows, up to the desktop app's 1440x900; --window sets it exactly.
++    let (sw, sh) = egui_aros::screen_size().map_or((1456, 948), |(w, h)| (w as i32, h as i32));
++    let (w, h) = options.window.unwrap_or((1440.min(sw - 16).max(640), 900.min(sh - 48).max(420)));
++    let (w, h) = (w.max(1) as u32, h.max(1) as u32);
++    let ctx = egui::Context::default();
++    let shared_window: services::SharedWindow = Rc::new(RefCell::new(None));
++    let app = new_app(shared_window.clone(), &options);
++    SheetApp::setup_context_for_language(&ctx, app.ui.dark, app.ui.language);
++    let mut shell = Shell { app, shared_window, screenshot: options.screenshot.clone().map(|p| (p, options.screenshot_frames)), done: false };
++    let run_options = egui_aros::Options {
++        title: "GridCraft".to_owned(),
++        inner_size: (w, h),
++        min_inner_size: Some((640, 420)),
++        clear_color: [0xf3, 0xf3, 0xf3],
++        idle_poll: Some(IDLE_POLL),
++        measure_paint: false,
++        // A build drawing with OpenGL says so in the title, so a screenshot names the variant.
++        title_suffix: if cfg!(feature = "glow") { " [GL]".to_owned() } else { String::new() },
++    };
++    let result = egui_aros::run(run_options, ctx, &mut shell);
++    // The services hold the window handle; let go of it with the window.
++    *shell.shared_window.borrow_mut() = None;
++    if let Err(e) = result {
++        eprintln!("gridcraft: {e}");
++        return 1;
++    }
++    log::info!("closing: event loop finished");
++    if shell.screenshot.is_none() {
++        save_prefs(&shell.app);
++    }
++    drop(shell);
++    log::info!("closing: application state dropped");
++    0
++}
++
++fn write_png(path: &str, r: &egui_aros::raster::Renderer) -> Result<(), String> {
++    let img = image::RgbaImage::from_raw(r.width as u32, r.height as u32, r.frame.clone()).ok_or("frame size mismatch")?;
++    img.save_with_format(path, image::ImageFormat::Png).map_err(|e| e.to_string())
++}
+diff --git a/apps/gridcraft-aros/src/services.rs b/apps/gridcraft-aros/src/services.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9046c20ee460e04410b37902132c8c32c23f4d1f
+--- /dev/null
++++ b/apps/gridcraft-aros/src/services.rs
+@@ -0,0 +1,119 @@
++//! The platform services the spreadsheet needs on AROS: ASL file requesters, the system
++//! clipboard's text and opening links. The same contract as the desktop app's `services` function
++//! (apps/gridcraft/src/main.rs), without rfd, arboard and craft-print, which have no AROS
++//! backend. Copy writes plain text through egui-aros (Ctrl/Amiga+C, X); HTML on the clipboard and
++//! printing are left out (`None`), which the app handles as "not available".
++
++use std::cell::RefCell;
++use std::rc::Rc;
++
++use egui_aros::WindowHandle;
++use egui_aros::asl::{Select, request};
++use gridcraft_ui_egui::Services;
++
++/// The window the requesters are parented to, set once the window is open (the requester runs on
++/// the main thread, modally, while the loop is inside the service call). The handle holds the
++/// window weakly: after it closes, a requester opens without a parent.
++pub type SharedWindow = Rc<RefCell<Option<WindowHandle>>>;
++
++/// Workbooks File › Open reads: the desktop app's filter, as an AmigaDOS pattern (matched without
++/// regard to case).
++const WORKBOOKS: &str = "#?.(xlsx|xlsm|xls|xlsb|ods|csv|tsv|txt|json)";
++const PICTURES: &str = "#?.(png|jpg|jpeg)";
++/// The types Save As offers; the suggested name's own type (an export asks for .pdf, .csv or
++/// .html) is kept, anything else becomes .xlsx, as in the desktop app.
++const SAVE_TYPES: [&str; 4] = ["xlsx", "csv", "html", "pdf"];
++
++/// The file name part of an AmigaDOS or POSIX path (`a.xlsx` for `Work:Books/a.xlsx`).
++pub fn file_part(path: &str) -> &str {
++    path.rsplit(['/', ':']).next().unwrap_or(path)
++}
++
++/// The directory part of an AmigaDOS or POSIX path (`Work:Books/` for `Work:Books/a.xlsx`).
++pub fn dir_part(path: &str) -> &str {
++    match path.rfind(['/', ':']) {
++        Some(i) => &path[..=i],
++        None => "",
++    }
++}
++
++/// The name Save As suggests: the stem of `suggested` with its type when it is one of
++/// [`SAVE_TYPES`], otherwise `.xlsx`.
++pub fn save_name(suggested: &str) -> String {
++    let name = file_part(suggested);
++    let (stem, ext) = match name.rsplit_once('.') {
++        Some((stem, ext)) if !stem.is_empty() => (stem, ext.to_ascii_lowercase()),
++        _ => (name, String::new()),
++    };
++    let stem = if stem.is_empty() { "Book1" } else { stem };
++    let ext = if SAVE_TYPES.contains(&ext.as_str()) { ext } else { "xlsx".to_owned() };
++    format!("{stem}.{ext}")
++}
++
++/// The services for this shell.
++pub fn aros(window: SharedWindow) -> Services {
++    let last_dir: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
++    let (open_window, picture_window, save_window) = (window.clone(), window.clone(), window);
++    let (open_dir, picture_dir, save_dir) = (last_dir.clone(), last_dir.clone(), last_dir);
++    Services {
++        pick_open: Some(Box::new(move || {
++            let win = open_window.borrow().clone()?;
++            let dir = open_dir.borrow().clone();
++            let path = request(&win, Select::Open, "Open", &dir, "", WORKBOOKS).into_iter().next()?;
++            *open_dir.borrow_mut() = dir_part(&path).to_string();
++            Some(path)
++        })),
++        pick_picture: Some(Box::new(move || {
++            let win = picture_window.borrow().clone()?;
++            let dir = picture_dir.borrow().clone();
++            let path = request(&win, Select::Open, "Insert Picture", &dir, "", PICTURES).into_iter().next()?;
++            *picture_dir.borrow_mut() = dir_part(&path).to_string();
++            Some(path)
++        })),
++        pick_save: Some(Box::new(move |suggested: &str| {
++            let win = save_window.borrow().clone()?;
++            let dir = dir_part(suggested).to_string();
++            let dir = if dir.is_empty() { save_dir.borrow().clone() } else { dir };
++            let path = request(&win, Select::Save, "Save As", &dir, &save_name(suggested), "").into_iter().next()?;
++            *save_dir.borrow_mut() = dir_part(&path).to_string();
++            Some(path)
++        })),
++        paste_text: Some(Box::new(egui_aros::clipboard_text)),
++        open_url: Some(Box::new(open_link)),
++        ..Default::default()
++    }
++}
++
++/// Opens a link with the system's OpenURL. As in the desktop app, only http, https and mailto
++/// addresses are passed on.
++fn open_link(target: &str) {
++    let gridcraft_engine::links::LinkKind::External(target) = gridcraft_engine::links::classify(target) else {
++        log::warn!("refused to open {target:?}: only http, https and mailto links are opened");
++        return;
++    };
++    if !egui_aros::open_url(&target) {
++        log::warn!("OpenURL {target} failed");
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn splits_amigados_and_posix_paths() {
++        assert_eq!(file_part("Work:Books/a.xlsx"), "a.xlsx");
++        assert_eq!(dir_part("Work:Books/a.xlsx"), "Work:Books/");
++        assert_eq!(dir_part("RAM:a.xlsx"), "RAM:");
++        assert_eq!(dir_part("a.xlsx"), "");
++    }
++
++    #[test]
++    fn save_keeps_export_types_and_defaults_to_xlsx() {
++        assert_eq!(save_name("Book1"), "Book1.xlsx");
++        assert_eq!(save_name("RAM:Report.PDF"), "Report.pdf");
++        assert_eq!(save_name("Data.csv"), "Data.csv");
++        assert_eq!(save_name("Old.xls"), "Old.xlsx");
++        assert_eq!(save_name(""), "Book1.xlsx");
++    }
++}

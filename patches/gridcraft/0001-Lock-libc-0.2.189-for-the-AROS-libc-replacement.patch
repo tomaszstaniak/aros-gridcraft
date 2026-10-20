@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 11:04:50 +0200
+Subject: [PATCH] Lock libc 0.2.189 for the AROS libc replacement
+
+The AROS build replaces the libc crate with rust-aros's libc-aros, which is
+version 0.2.189. Cargo applies a [patch] only when the locked version
+matches, and gridcraft 0.8.0 locks 0.2.190, so the replacement would be ignored
+and the build would use the stock crate, which has no AROS definitions.
+
+Scope: Cargo.lock only (cargo update -p libc --precise 0.2.189).
+Upstream-status: local-only.
+Verification: the libc patch is used by the x86_64 ABIv11 build.
+Removal: when libc-aros follows libc 0.2.190 or later.
+---
+ Cargo.lock | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 17ebf848cc610c94a784b25a89d34ca4158c54a0..9bfc802237de75d1ace5590ea8ab62897143872e 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1973,9 +1973,9 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
+ 
+ [[package]]
+ name = "libc"
+-version = "0.2.190"
++version = "0.2.189"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
++checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+ 
+ [[package]]
+ name = "libloading"
