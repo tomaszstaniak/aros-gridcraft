@@ -1,0 +1,30 @@
+{
+  "title": "GridCraft 0.8.0 AROS ABIv11 test 1 (rebuild 2)",
+  "version": "0.8.0",
+  "label": "test1-r2",
+  "archive": "GridCraft-0.8.0-test1-r2.x86_64-aros-v11.zip",
+  "source_archive": "GridCraft-0.8.0-test1-r2-source.zip",
+  "release_notes": "RELEASE-NOTES-0.8.0-test1-r2.md",
+  "drawer": "GridCraft",
+  "stack": 4000000,
+  "build": {
+    "abi": "x86_64 ABIv11",
+    "features": [],
+    "panic": "unwind"
+  },
+  "icon_source": "work:assets/app-icon/hicolor/64x64/apps/ai.storyteller.gridcraft.png",
+  "gridcraft_notices": [
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "NOTICE",
+    "ATTRIBUTION.md",
+    "assets/app-icon/LICENSE.txt"
+  ],
+  "source_archive_exclude": [
+    "AGENTS.md",
+    "CLAUDE.md"
+  ],
+  "notice_renames": {
+    "assets/app-icon/LICENSE.txt": "app-icon-LICENSE.txt"
+  }
+}

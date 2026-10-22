@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:15:08 +0200
+Subject: [PATCH] gridcraft-aros: keep the main task's startup directory lock
+ for the C library
+
+Problem: ABIv11 crt.library keeps chdir's saved directory in one base for
+  all tasks of the process, records the lock of whichever task changes
+  directory first, and restores it on the main task at exit. realpath()
+  changes directory (posixc/realpath.c: open(".") and fchdir), so a worker
+  thread that calls std::fs::canonicalize first makes the library unlock
+  the main task's Workbench startup lock at exit, which Workbench startup
+  then unlocks again (a double UnLock of freed memory).
+Here: its font scan resolves every font folder with std::fs::canonicalize on its font-scan thread, at every start.
+Rationale: chdir(".") on the main task before any worker starts records
+  the main task's own lock and gives the library a replacement lock it
+  owns; the directory does not change. The same change as the PdfCraft
+  AROS port's patch 0011, which a probe confirmed (CRT kept the worker's
+  lock without it, the main task's lock with it). Not reproduced as a
+  crash in GridCraft; the code path is the reason.
+Scope: the AROS GUI entry point; failure stops before any worker exists.
+Upstream-status: local-only; candidate for the AROS frontend.
+Verification: disk-based Workbench start and close in the port's evidence.
+Removal: when the C library keeps the saved directory per task.
+---
+ apps/gridcraft-aros/src/main.rs | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/apps/gridcraft-aros/src/main.rs b/apps/gridcraft-aros/src/main.rs
+index d8c98d9bdc6f18cd63688d58cad5482b136dc8b9..1b8576037186971c54852479449b6dff55570d1b 100644
+--- a/apps/gridcraft-aros/src/main.rs
++++ b/apps/gridcraft-aros/src/main.rs
+@@ -177,6 +177,17 @@ fn save_prefs(app: &SheetApp) {
+ }
+ 
+ fn main() {
++    // ABIv11's C library keeps one saved directory for the whole process and
++    // restores it on the main task at exit. Whichever task changes directory
++    // first decides what is saved, and realpath() (std::fs::canonicalize)
++    // changes directory. If a worker does it first, the library later unlocks
++    // the main task's Workbench startup lock, which Workbench startup then
++    // unlocks again. chdir(".") here, before any worker, keeps the main task's
++    // own lock saved and gives the library a replacement it owns.
++    if let Err(error) = std::env::set_current_dir(".") {
++        eprintln!("gridcraft: cannot preserve the startup directory: {error}");
++        std::process::exit(1);
++    }
+     install_logger();
+     let options = match parse_args() {
+         Ok(Some(o)) => o,
