@@ -5,3 +5,6 @@
 0005-gridcraft-aros-screenshot-draws-frames-until-the-pic.patch
 0006-gridcraft-aros-keep-the-main-task-s-startup-director.patch
 0007-gridcraft-aros-name-the-startup-directory-in-full-wh.patch
+0008-gridcraft-aros-keep-the-startup-directory-with-an-em.patch
+0009-ui-egui-keys-typed-faster-than-the-frames-come-keep-.patch
+0010-gridcraft-aros-make-document-names-from-the-command-.patch

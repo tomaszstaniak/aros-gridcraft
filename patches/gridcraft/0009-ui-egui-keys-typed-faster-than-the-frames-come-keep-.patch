@@ -1,0 +1,435 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 11:29:08 +0200
+Subject: [PATCH] ui-egui: keys typed faster than the frames come keep their
+ order
+
+Problem: when several keys arrive in one frame (a quick typist on a
+  slow machine; the AROS port draws on the CPU), typing on a selected
+  cell started the edit with the first character and dropped the rest
+  of the frame's events, and the cell editor took Enter, Tab, Escape
+  and arrows from anywhere in that frame. "123" then Enter left 1 in
+  the cell; "1", Enter, "2" lost the 2; an Escape before the typing
+  cancelled it.
+Rationale: a frame now takes keyboard events up to the first key that
+  is not typing (an editing, moving or function key, a shortcut, a
+  clipboard command); the rest wait for the next frame, in order, as
+  if typed more slowly. The frame that opens the editor gives it all
+  the text typed in it.
+Scope: crates/ui-egui (SheetApp::logic, the grid's keyboard input);
+  tests in tests/type_to_edit_one_frame.rs.
+Upstream-status: candidate; upstream 0.11.1 has the same code.
+Verification: 10 of the 12 tests fail without this change (the other
+  two cover Shift+Space and an editor already open); all
+  gridcraft-ui-egui host tests pass (691).
+Removal: when upstream takes it.
+---
+ crates/ui-egui/src/grid.rs                    |  87 ++++++-
+ crates/ui-egui/src/lib.rs                     |  26 ++
+ .../ui-egui/tests/type_to_edit_one_frame.rs   | 227 ++++++++++++++++++
+ 3 files changed, 338 insertions(+), 2 deletions(-)
+ create mode 100644 crates/ui-egui/tests/type_to_edit_one_frame.rs
+
+diff --git a/crates/ui-egui/src/grid.rs b/crates/ui-egui/src/grid.rs
+index 00e0c18bed8900dfb3c274de1e08ad20cd26abba..bec0bd1bcb6ab4fffb70a1f3dba2b83b2554e9a3 100644
+--- a/crates/ui-egui/src/grid.rs
++++ b/crates/ui-egui/src/grid.rs
+@@ -2591,7 +2591,7 @@ fn keyboard(app: &mut SheetApp, ctx: &egui::Context, resp: &egui::Response, geo:
+             if !m.alt && (m.ctrl || m.command || (m.shift && *key == egui::Key::Space)))
+     });
+     let page = ((geo.cells.height() / geo.z) / sh.default_row_height).floor().max(1.0) as i64;
+-    for ev in events {
++    for (index, ev) in events.iter().cloned().enumerate() {
+         match ev {
+             egui::Event::Copy => {
+                 app.copy_to_clipboard(ctx, "edit.copy");
+@@ -2601,7 +2601,17 @@ fn keyboard(app: &mut SheetApp, ctx: &egui::Context, resp: &egui::Response, geo:
+             }
+             egui::Event::Paste(text) => app.paste_external(text),
+             egui::Event::Text(_) if shortcut_pressed => {}
+-            egui::Event::Text(text) if text.chars().all(|c| !c.is_control()) && !text.is_empty() => {
++            egui::Event::Text(mut text) if text.chars().all(|c| !c.is_control()) && !text.is_empty() => {
++                // On a slow frame several typed keys arrive together, and the cell editor opened
++                // here reads keys only from the next frame on: start the edit with all the text
++                // of this frame. Keys that are not typing wait for the next frame (`frame_end`).
++                for later in &events[index + 1..] {
++                    match later {
++                        egui::Event::Text(t) if t.chars().all(|c| !c.is_control()) => text.push_str(t),
++                        e if ends_typing(e) => break,
++                        _ => {}
++                    }
++                }
+                 app.begin_edit(Some(text), false);
+                 if let Some(ed) = app.editor.as_mut() {
+                     ed.caret = ed.text.chars().count();
+@@ -2690,6 +2700,79 @@ fn keyboard(app: &mut SheetApp, ctx: &egui::Context, resp: &egui::Response, geo:
+     }
+ }
+ 
++/// Where a frame's keyboard input ends ([`SheetApp::pace_keys`]): before the first key that is
++/// not typing if something was typed earlier in the frame, else just after that key (and the
++/// character it typed, if any: Shift+Space). `None` when the frame takes all its events.
++pub(crate) fn frame_end(events: &[egui::Event]) -> Option<usize> {
++    let mut typed = false;
++    for (n, e) in events.iter().enumerate() {
++        if ends_typing(e) {
++            if typed {
++                return Some(n);
++            }
++            let own_text = events[n + 1..].iter().take_while(|e| matches!(e, egui::Event::Text(_))).count();
++            return Some(n + 1 + own_text);
++        }
++        if matches!(e, egui::Event::Text(_) | egui::Event::Ime(_)) {
++            typed = true;
++        }
++    }
++    None
++}
++
++/// Events that [`frame_end`] may hold for the next frame: the keyboard's. Pointer and window
++/// events stay in their frame, since egui has already taken the pointer's state from them.
++pub(crate) fn is_keyboard_event(e: &egui::Event) -> bool {
++    matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Ime(_) | egui::Event::Paste(_) | egui::Event::Copy | egui::Event::Cut)
++}
++
++/// A key press that is not typing (an editing, moving or function key, or a shortcut), or a
++/// clipboard command.
++fn ends_typing(e: &egui::Event) -> bool {
++    match e {
++        egui::Event::Key { key, pressed: true, modifiers: m, .. } => {
++            ((m.ctrl || m.command) && !m.alt) || (m.shift && *key == egui::Key::Space) || !types_text(*key)
++        }
++        egui::Event::Paste(_) | egui::Event::Copy | egui::Event::Cut => true,
++        _ => false,
++    }
++}
++
++/// Whether a key press is typing (its character comes as a Text event) rather than an editing,
++/// moving or function key.
++fn types_text(key: egui::Key) -> bool {
++    use egui::Key;
++    !matches!(
++        key,
++        Key::Enter
++            | Key::Tab
++            | Key::Escape
++            | Key::Backspace
++            | Key::Delete
++            | Key::Insert
++            | Key::ArrowUp
++            | Key::ArrowDown
++            | Key::ArrowLeft
++            | Key::ArrowRight
++            | Key::Home
++            | Key::End
++            | Key::PageUp
++            | Key::PageDown
++            | Key::F1
++            | Key::F2
++            | Key::F3
++            | Key::F4
++            | Key::F5
++            | Key::F6
++            | Key::F7
++            | Key::F8
++            | Key::F9
++            | Key::F10
++            | Key::F11
++            | Key::F12
++    )
++}
++
+ fn in_cell_editor(app: &mut SheetApp, ui: &mut egui::Ui, geo: &Geo, sh: &Sheet, wb: &Workbook) {
+     let Some(ed) = app.editor.as_ref() else { return };
+     if ed.sheet != wb.active_sheet {
+diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
+index f96cdac3c07e29a1722461041a4324b2e1bd804b..3413afebd6c5b957a28f82bb4ef62932ea4fb386 100644
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -227,6 +227,8 @@ pub struct SheetApp {
+     print_feedback_seen: Option<printing::Feedback>,
+     /// Synthetic input from agents, one batch per frame (drags need several frames).
+     pub synthetic: std::collections::VecDeque<Vec<egui::Event>>,
++    /// Keyboard events held for the next frame (see [`grid::frame_end`]).
++    held_keys: Vec<egui::Event>,
+     pub control_rx: Option<std::sync::mpsc::Receiver<ControlRequest>>,
+     pub grid: grid::GridState,
+     pub perf: Perf,
+@@ -282,6 +284,7 @@ impl SheetApp {
+             printing: Default::default(),
+             print_feedback_seen: None,
+             synthetic: Default::default(),
++            held_keys: Vec::new(),
+             control_rx: None,
+             grid: grid::GridState {
+                 last_border: "bottom".into(),
+@@ -990,6 +993,7 @@ impl SheetApp {
+ 
+     /// Per-frame logic (control channel, screenshots). Call before `ui`.
+     pub fn logic(&mut self, ctx: &egui::Context) {
++        self.pace_keys(ctx);
+         // A keytip control request lives one frame: the ribbon consumes it during `ui`, and
+         // anything that never reached a control (collapsed ribbon, tab switch) is dropped.
+         self.ui.keytip_invoke = None;
+@@ -1084,6 +1088,28 @@ impl SheetApp {
+         }
+     }
+ 
++    /// Keys typed faster than the frames come (a quick typist on a slow machine) arrive several
++    /// in one frame, but widgets read a frame's keys as a set: the cell editor, opened by the
++    /// first character, takes Enter or Escape from anywhere in the frame and never sees the
++    /// characters before it opened. So a frame takes the keyboard events up to the first key
++    /// that is not typing, and the rest wait for the next frame, in order.
++    fn pace_keys(&mut self, ctx: &egui::Context) {
++        ctx.input_mut(|i| {
++            let mut events = std::mem::take(&mut self.held_keys);
++            events.append(&mut i.events);
++            if let Some(end) = grid::frame_end(&events) {
++                let (now, later): (Vec<_>, Vec<_>) =
++                    events.drain(end..).partition(|e| !grid::is_keyboard_event(e));
++                events.extend(now);
++                self.held_keys = later;
++            }
++            i.events = events;
++        });
++        if !self.held_keys.is_empty() {
++            ctx.request_repaint();
++        }
++    }
++
+     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
+         if let Some(mut batch) = self.synthetic.pop_front() {
+             raw.events.append(&mut batch);
+diff --git a/crates/ui-egui/tests/type_to_edit_one_frame.rs b/crates/ui-egui/tests/type_to_edit_one_frame.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..62838cae4cdcfd2f938232c6bc83e9ff785fdeb1
+--- /dev/null
++++ b/crates/ui-egui/tests/type_to_edit_one_frame.rs
+@@ -0,0 +1,227 @@
++//! Keys that arrive in the same frame as the one that starts a cell edit are typed into the cell,
++//! in the order they were typed, as on a slow machine where a quick typist's keys pile up
++//! between frames.
++
++use egui::{Event, Key, Modifiers};
++use gridcraft_engine::Session;
++use gridcraft_engine::core::{CellRef, Value};
++use gridcraft_ui_egui::SheetApp;
++use serde_json::json;
++
++type Harness = egui_kittest::Harness<'static, SheetApp>;
++
++fn harness() -> Harness {
++    let mut session = Session::new();
++    session.new_workbook();
++    session.execute("selection.set", json!({"cell": "B2"})).unwrap();
++    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
++        |ui, app: &mut SheetApp| {
++            app.logic(ui.ctx());
++            app.ui(ui);
++        },
++        SheetApp::new(session, Default::default()),
++    );
++    h.run_steps(4);
++    h
++}
++
++/// One key as a keyboard sends it: press, the character it types (if any), release.
++fn key(events: &mut Vec<Event>, k: Key, text: Option<&str>) {
++    events.push(Event::Key { key: k, physical_key: Some(k), pressed: true, repeat: false, modifiers: Modifiers::NONE });
++    if let Some(t) = text {
++        events.push(Event::Text(t.into()));
++    }
++    events.push(Event::Key { key: k, physical_key: Some(k), pressed: false, repeat: false, modifiers: Modifiers::NONE });
++}
++
++/// Digits and letters with their keys; other characters (`ż`, `€`) as text only, as a keymap
++/// that egui has no key for sends them.
++fn typed(events: &mut Vec<Event>, s: &str) {
++    for c in s.chars() {
++        let t = c.to_string();
++        match Key::from_name(&c.to_ascii_uppercase().to_string()) {
++            Some(k) => key(events, k, Some(&t)),
++            None => events.push(Event::Text(t)),
++        }
++    }
++}
++
++/// `events` in one frame, then enough frames for every held key.
++fn send(h: &mut Harness, events: Vec<Event>) {
++    h.input_mut().events.extend(events);
++    h.run_steps(8);
++}
++
++fn cell(h: &Harness, a1: &str) -> Value {
++    let d = h.state().session.active().unwrap();
++    d.wb.active().unwrap().value(CellRef::parse(a1).unwrap())
++}
++
++fn active(h: &Harness) -> String {
++    h.state().session.active().unwrap().selection.active.a1()
++}
++
++fn text(s: &str) -> Value {
++    Value::Text(s.into())
++}
++
++#[test]
++fn every_key_of_one_frame_reaches_the_cell() {
++    let mut h = harness();
++    let mut events = Vec::new();
++    typed(&mut events, "123");
++    key(&mut events, Key::Enter, None);
++    send(&mut h, events);
++    assert_eq!(cell(&h, "B2"), Value::Number(123.0), "all three digits are in the cell");
++    assert!(h.state().editor.is_none(), "Enter in the same frame commits the edit");
++    assert_eq!(active(&h), "B3", "and moves down");
++}
++
++#[test]
++fn typing_without_enter_leaves_the_edit_open_with_every_character() {
++    let mut h = harness();
++    let mut events = Vec::new();
++    typed(&mut events, "123");
++    send(&mut h, events);
++    assert_eq!(h.state().editor.as_ref().map(|e| e.text.as_str()), Some("123"));
++    assert_eq!(cell(&h, "B2"), Value::Empty, "nothing is committed yet");
++    let mut events = Vec::new();
++    key(&mut events, Key::Enter, None);
++    send(&mut h, events);
++    assert_eq!(cell(&h, "B2"), Value::Number(123.0));
++}
++
++#[test]
++fn a_text_event_with_several_characters_is_kept_whole() {
++    let mut h = harness();
++    let mut events = vec![Event::Text("ab".into())];
++    typed(&mut events, "c");
++    key(&mut events, Key::Enter, None);
++    send(&mut h, events);
++    assert_eq!(cell(&h, "B2"), text("abc"));
++}
++
++#[test]
++fn backspace_between_typed_keys_takes_back_the_character_before_it() {
++    let mut h = harness();
++    let mut events = Vec::new();
++    typed(&mut events, "12");
++    key(&mut events, Key::Backspace, None);
++    typed(&mut events, "3");
++    key(&mut events, Key::Enter, None);
++    send(&mut h, events);
++    assert_eq!(cell(&h, "B2"), Value::Number(13.0));
++}
++
++#[test]
++fn an_arrow_commits_and_the_keys_after_it_go_to_the_next_cell() {
++    let mut h = harness();
++    let mut events = Vec::new();
++    typed(&mut events, "1");
++    key(&mut events, Key::ArrowRight, None);
++    typed(&mut events, "2");
++    key(&mut events, Key::Enter, None);
++    send(&mut h, events);
++    assert_eq!(cell(&h, "B2"), Value::Number(1.0));
++    assert_eq!(cell(&h, "C2"), Value::Number(2.0));
++}
++
++#[test]
++fn enter_and_tab_between_typed_keys_keep_their_place() {
++    let mut h = harness();
++    let mut events = Vec::new();
++    typed(&mut events, "1");
++    key(&mut events, Key::Enter, None);
++    typed(&mut events, "2");
++    key(&mut events, Key::Tab, None);
++    typed(&mut events, "3");
++    key(&mut events, Key::Enter, None);
++    send(&mut h, events);
++    assert_eq!(cell(&h, "B2"), Value::Number(1.0));
++    assert_eq!(cell(&h, "B3"), Value::Number(2.0));
++    assert_eq!(cell(&h, "C3"), Value::Number(3.0));
++    assert!(h.state().editor.is_none());
++}
++
++#[test]
++fn keys_before_the_typing_act_on_the_grid_first() {
++    let mut h = harness();
++    let mut events = Vec::new();
++    key(&mut events, Key::Enter, None);
++    typed(&mut events, "12");
++    key(&mut events, Key::Enter, None);
++    send(&mut h, events);
++    assert_eq!(cell(&h, "B2"), Value::Empty, "the first Enter only moves");
++    assert_eq!(cell(&h, "B3"), Value::Number(12.0));
++    assert_eq!(active(&h), "B4");
++}
++
++#[test]
++fn escape_cancels_what_was_typed_before_it_and_nothing_after() {
++    let mut h = harness();
++    let mut events = Vec::new();
++    typed(&mut events, "12");
++    key(&mut events, Key::Escape, None);
++    send(&mut h, events);
++    assert_eq!(cell(&h, "B2"), Value::Empty);
++    assert!(h.state().editor.is_none());
++
++    let mut h = harness();
++    let mut events = Vec::new();
++    key(&mut events, Key::Escape, None);
++    typed(&mut events, "5");
++    key(&mut events, Key::Enter, None);
++    send(&mut h, events);
++    assert_eq!(cell(&h, "B2"), Value::Number(5.0), "an Escape before the typing does not cancel it");
++}
++
++#[test]
++fn a_paste_after_typed_keys_goes_into_the_cell_after_them() {
++    let mut h = harness();
++    let mut events = Vec::new();
++    typed(&mut events, "1");
++    events.push(Event::Paste("xyz".into()));
++    key(&mut events, Key::Enter, None);
++    send(&mut h, events);
++    assert_eq!(cell(&h, "B2"), text("1xyz"));
++}
++
++#[test]
++fn characters_outside_ascii_arrive_in_order() {
++    let mut h = harness();
++    let mut events = Vec::new();
++    typed(&mut events, "żół€");
++    key(&mut events, Key::Enter, None);
++    send(&mut h, events);
++    assert_eq!(cell(&h, "B2"), text("żół€"));
++}
++
++#[test]
++fn typing_into_an_open_editor_is_not_doubled() {
++    let mut h = harness();
++    let mut events = Vec::new();
++    typed(&mut events, "a");
++    send(&mut h, events);
++    let mut events = Vec::new();
++    typed(&mut events, "bc");
++    send(&mut h, events);
++    assert_eq!(h.state().editor.as_ref().map(|e| e.text.as_str()), Some("abc"));
++    let mut events = Vec::new();
++    typed(&mut events, "d");
++    key(&mut events, Key::Enter, None);
++    send(&mut h, events);
++    assert_eq!(cell(&h, "B2"), text("abcd"));
++}
++
++#[test]
++fn a_shortcut_that_types_a_space_does_not_start_an_edit() {
++    let mut h = harness();
++    let shift = Modifiers::SHIFT;
++    let events = vec![
++        Event::Key { key: Key::Space, physical_key: Some(Key::Space), pressed: true, repeat: false, modifiers: shift },
++        Event::Text(" ".into()),
++        Event::Key { key: Key::Space, physical_key: Some(Key::Space), pressed: false, repeat: false, modifiers: shift },
++    ];
++    send(&mut h, events);
++    assert!(h.state().editor.is_none(), "Shift+Space selects the row");
++}
