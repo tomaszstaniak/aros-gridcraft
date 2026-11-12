@@ -1,0 +1,22 @@
+.KEY RUNDIR/A
+.BRA [
+.KET ]
+; Native check of the worker pool (egui-aros craft-jobs): put job-probe into RAM:t.
+; Then: Execute RAM:t/run-jobs <results directory>.
+FailAt 21
+Protect RAM:t/job-probe +e
+RAM:t/job-probe rounds >[RUNDIR]/rounds.txt
+Echo $RC >[RUNDIR]/rounds.rc
+RAM:t/job-probe full >[RUNDIR]/full.txt
+Echo $RC >[RUNDIR]/full.rc
+RAM:t/job-probe shutdown >[RUNDIR]/shutdown.txt
+Echo $RC >[RUNDIR]/shutdown.rc
+RAM:t/job-probe leave >[RUNDIR]/leave.txt
+Echo $RC >[RUNDIR]/leave.rc
+RAM:t/job-probe rounds >[RUNDIR]/rounds-again.txt
+Echo $RC >[RUNDIR]/rounds-again.rc
+Avail >[RUNDIR]/avail.txt
+Type [RUNDIR]/rounds.txt
+Type [RUNDIR]/shutdown.txt
+Type [RUNDIR]/leave.txt
+Echo "done" >[RUNDIR]/done.txt

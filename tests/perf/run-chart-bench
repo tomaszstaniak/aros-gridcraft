@@ -1,0 +1,22 @@
+.KEY RUNDIR/A
+.BRA [
+.KET ]
+; Frame times with a large chart in view: two programs, the same workbook, two runs each.
+; Put GridCraft-rel, GridCraft-cache and bigchart.xlsx into RAM:t.
+; Then: Execute RAM:t/run-chart-bench <results directory>. Per-frame lines need RUST_LOG=debug.
+FailAt 21
+Protect RAM:t/GridCraft-rel +e
+Protect RAM:t/GridCraft-cache +e
+SetEnv RUST_LOG debug
+SetEnv GRIDCRAFT_NO_PREFS 1
+SetEnv GRIDCRAFT_LOG [RUNDIR]/rel-1.log
+RAM:t/GridCraft-rel --gui-renderer CPU --window 780x540 --screenshot RAM:t/rel-1.png --screenshot-frames 40 RAM:t/bigchart.xlsx
+SetEnv GRIDCRAFT_LOG [RUNDIR]/cache-1.log
+RAM:t/GridCraft-cache --gui-renderer CPU --window 780x540 --screenshot RAM:t/cache-1.png --screenshot-frames 40 RAM:t/bigchart.xlsx
+SetEnv GRIDCRAFT_LOG [RUNDIR]/rel-2.log
+RAM:t/GridCraft-rel --gui-renderer CPU --window 780x540 --screenshot RAM:t/rel-2.png --screenshot-frames 40 RAM:t/bigchart.xlsx
+SetEnv GRIDCRAFT_LOG [RUNDIR]/cache-2.log
+RAM:t/GridCraft-cache --gui-renderer CPU --window 780x540 --screenshot RAM:t/cache-2.png --screenshot-frames 40 RAM:t/bigchart.xlsx
+Copy RAM:t/rel-1.png [RUNDIR]/rel-1.png
+Copy RAM:t/cache-1.png [RUNDIR]/cache-1.png
+Echo "done" >[RUNDIR]/done.txt

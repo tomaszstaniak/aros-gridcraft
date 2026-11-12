@@ -1,0 +1,8 @@
+[
+  {"frame": 8, "run": "cell.set", "params": {"cell": "A1", "input": "42"}},
+  {"frame": 12, "run": "file.save", "params": {"path": "/RAM/t/big-saved.xlsx"}},
+  {"frame": 14, "run": "selection.set", "params": {"cell": "C5"}},
+  {"frame": 16, "run": "selection.set", "params": {"cell": "D9"}},
+  {"frame": 18, "run": "cell.set", "params": {"cell": "B1", "input": "typed while saving"}},
+  {"frame": 40, "quit": true}
+]

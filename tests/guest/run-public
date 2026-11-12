@@ -1,0 +1,27 @@
+.KEY RUNDIR/A,MACHINE/A
+.BRA [
+.KET ]
+; GridCraft from the public apkg catalogue: update, show, install, verify, use, remove.
+; Put apkg (for this system), hello.xlsx and steps-pkg.json into RAM:t; the network must be up.
+FailAt 21
+Protect RAM:t/apkg +e
+MakeDir RAM:pk
+Date >[RUNDIR]/date.txt
+RAM:t/apkg --root RAM:pk --machine [MACHINE] update >[RUNDIR]/update.txt
+Echo $RC >[RUNDIR]/update.rc
+RAM:t/apkg --root RAM:pk --machine [MACHINE] show gridcraft >[RUNDIR]/show.txt
+Echo $RC >[RUNDIR]/show.rc
+RAM:t/apkg --root RAM:pk --machine [MACHINE] install gridcraft --yes >[RUNDIR]/install.txt
+Echo $RC >[RUNDIR]/install.rc
+RAM:t/apkg --root RAM:pk --machine [MACHINE] verify gridcraft >[RUNDIR]/verify.txt
+Echo $RC >[RUNDIR]/verify.rc
+RAM:pk/GridCraft/gridcraft-cli version >[RUNDIR]/cli-version.txt
+Echo $RC >[RUNDIR]/cli-version.rc
+SetEnv RUST_LOG info
+RAM:pk/GridCraft/GridCraft --window 780x540 --test-steps RAM:t/steps-pkg.json RAM:t/hello.xlsx
+Echo $RC >[RUNDIR]/gui.rc
+Copy RAM:pk/GridCraft/GridCraftData/GridCraft.log [RUNDIR]/GridCraft.log
+RAM:t/apkg --root RAM:pk --machine [MACHINE] remove gridcraft --yes >[RUNDIR]/remove.txt
+Echo $RC >[RUNDIR]/remove.rc
+Type [RUNDIR]/install.txt
+Echo "done" >[RUNDIR]/done.txt

@@ -1,4 +1,4 @@
-# GridCraft 0.19.1 for AROS
+# GridCraft 0.19.1 for AROS, revision 1
 
 The AROS port of GridCraft 0.19.1, a spreadsheet program that opens and saves XLSX workbooks, imports XLS, XLSB, ODS, CSV and JSON, and exports CSV, HTML and PDF. It is built for three AROS systems.
 
@@ -6,14 +6,23 @@ The AROS port of GridCraft 0.19.1, a spreadsheet program that opens and saves XL
 
 | File | System |
 |---|---|
-| `GridCraft-0.19.1-aros-x86_64-abiv11-pc.zip` | AROS x86_64, ABIv11 (AROS One 1.3) |
-| `GridCraft-0.19.1-aros-x86_64-abiv1-pc.zip` | AROS x86_64, mainline ABIv1 (nightly 2026-11-10) |
-| `GridCraft-0.19.1-aros-aarch64-abiv1-raspi.zip` | AROS on Raspberry Pi, AArch64 ABIv1 (mainline nightly 2026-11-10) |
-| `GridCraft-0.19.1-source.zip` | Port sources, patches, pinned inputs and build recipe |
+| `GridCraft-0.19.1-r1-aros-x86_64-abiv11-pc.zip` | AROS x86_64, ABIv11 (AROS One 1.3) |
+| `GridCraft-0.19.1-r1-aros-x86_64-abiv1-pc.zip` | AROS x86_64, mainline ABIv1 (nightly 2026-11-10) |
+| `GridCraft-0.19.1-r1-aros-aarch64-abiv1-raspi.zip` | AROS on Raspberry Pi, AArch64 ABIv1 (mainline nightly 2026-11-10) |
+| `GridCraft-0.19.1-r1-source.zip` | Port sources, patches, pinned inputs and build recipe |
 
 Each package runs only on the system it was built for. `SHA256SUMS` lists the checksums. The packages can also be installed with the AROS package manager: `apkg install gridcraft`.
 
-## What is new
+## What is new in revision 1
+
+Revision 1 has the same GridCraft 0.19.1 with changes of the AROS port. `GridCraft --version` prints `0.19.1-r1`.
+
+- Saving no longer stops the window. Save, Save As and AutoSave write the file in the background: you can go on scrolling and typing while a large workbook is saved. What you type after choosing Save is not in that file and stays marked as unsaved. Closing the window waits until the file is written, and "Save" in the question about unsaved changes closes the workbook only after that.
+- A chart is worked out once and redrawn from that until the workbook, its size or the zoom changes, instead of on every frame. This is a small gain: most of the time of a frame with a large chart is still spent drawing it.
+
+With the package manager: `apkg upgrade gridcraft`. Settings and recent files in `GridCraftData` are kept.
+
+## What was new in 0.19.1
 
 This release moves from GridCraft 0.8.0 to GridCraft 0.19.1. For the changes in the spreadsheet itself, see the release notes of GridCraft upstream. On the AROS side:
 
@@ -33,7 +42,7 @@ Unpack the archive for your system anywhere writable and double-click GridCraft.
 
 `GridCraft --version` and the first line of `GridCraft.log` name the build; please include them when you report a problem.
 
-Tested on AROS One 1.3 (ABIv11), on mainline x86_64 AROS nightly 2026-11-10 and on the Raspberry Pi nightly 2026-11-10 in an emulator, not on a physical Raspberry Pi. On all three: starting from a Shell, opening a workbook, editing cells, saving, saving again over the same file, undo and redo, closing, and the command-line program. On mainline x86_64 also typing into cells, copy and paste, the Save As requester and the question about unsaved changes.
+Tested on AROS One 1.3 (ABIv11), on mainline x86_64 AROS nightly 2026-11-10 and on the Raspberry Pi nightly 2026-11-10 in an emulator, not on a physical Raspberry Pi. Revision 1 was tested on the same three systems: on each, an upgrade from 0.19.1 with the package manager (settings kept), then editing and saving from the upgraded program; on mainline x86_64 also saving with Ctrl+S, typing right after it, and closing with unsaved changes. On all three: starting from a Shell, opening a workbook, editing cells, saving, saving again over the same file, undo and redo, closing, and the command-line program. On mainline x86_64 also typing into cells, copy and paste, the Save As requester and the question about unsaved changes.
 
 ## Known limitations
 
@@ -41,6 +50,7 @@ Tested on AROS One 1.3 (ABIv11), on mainline x86_64 AROS nightly 2026-11-10 and 
 - No printing (export to PDF instead); files dropped on the window are not opened.
 - All workbooks share one window.
 - No formatted (HTML) clipboard content. The control server (`--control`) and `gridcraft-cli send` are not available.
+- Saving shows no progress in the window.
 - No automatic updates; use the AROS package manager.
 - OpenGL: where only Mesa's software renderer is present, `AUTO` uses the CPU. `GPU` has not been tested in this release.
 - Not tested on AROS in this release: pasting pictures, importing XLS, XLSB and ODS files, charts, PDF export, keyboard layouts other than the US one.

@@ -2,6 +2,8 @@
   "name": "GridCraft",
   "version": "0.19.1",
   "release": "0.19.1",
+  "revision": 1,
+  "revision_programs": "rebuilt",
   "upstream_version": "0.19.1 (main 37941f06, 2026-11-12)",
   "drawer": "GridCraft",
   "stack": 16777216,
@@ -9,7 +11,7 @@
     "GUI_RENDERER=CPU"
   ],
   "icon_source": "work:assets/app-icon/hicolor/64x64/apps/ai.storyteller.gridcraft.png",
-  "source_archive": "GridCraft-0.19.1-source.zip",
+  "source_archive": "GridCraft-0.19.1-r1-source.zip",
   "source_archive_exclude": [
     "AGENTS.md",
     "CLAUDE.md"
@@ -80,6 +82,8 @@
     "  plain text and pictures.",
     "- The control server (--control) and gridcraft-cli send, which drive a",
     "  running window, are not available.",
+    "- Saving a large workbook shows no progress in the window. The window",
+    "  stays usable meanwhile; closing it waits until the file is written.",
     "- No automatic updates: install new versions with the AROS package manager",
     "  or by unpacking the new archive.",
     "- Pasting a picture from the clipboard, importing XLS, XLSB and ODS files,",

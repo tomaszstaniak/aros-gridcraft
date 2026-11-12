@@ -1,0 +1,741 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 16:22:28 +0100
+Subject: [PATCH] ui-egui: Save, Save As and AutoSave write the file away from
+ the interface
+
+With a host that provides Services::run_detached, a save takes the workbook's snapshot in the frame it is asked in, hands serializing and writing to the host, and records the result in the frame after it is done (the engine's save_job). The window keeps drawing and taking input meanwhile, and an edit made while the file is written stays unsaved.
+
+One file is written by one job at a time, also for two workbooks saving to one path. An explicit save asked for while its workbook or file is being written waits and then writes the workbook as it is by then; an AutoSave in that case is left out. A failed save is shown and leaves the workbook open and unsaved. "Save" in Save Changes? closes the workbook after the file is written and asks again when it was edited meanwhile. The window does not close while a save is on its way. A host that cannot take a job gets it run at once.
+
+Unchanged: without the service, while actions are recorded, a macro is debugged or an undo group is open, for a PDF, for a workbook without a file and for control channel requests, file.save is one call.
+
+Tests: tests/save_jobs.rs (13). Not covered by a test: the window close held back while a save is on its way.
+---
+ crates/ui-egui/src/app.rs          |   6 +
+ crates/ui-egui/src/app/commands.rs |  10 +
+ crates/ui-egui/src/app/files.rs    |   5 +-
+ crates/ui-egui/src/app/quit.rs     |  18 +-
+ crates/ui-egui/src/control.rs      |   6 +
+ crates/ui-egui/src/lib.rs          |   7 +-
+ crates/ui-egui/src/save_jobs.rs    | 223 +++++++++++++++++++++
+ crates/ui-egui/src/services.rs     |   7 +
+ crates/ui-egui/tests/save_jobs.rs  | 304 +++++++++++++++++++++++++++++
+ 9 files changed, 583 insertions(+), 3 deletions(-)
+ create mode 100644 crates/ui-egui/src/save_jobs.rs
+ create mode 100644 crates/ui-egui/tests/save_jobs.rs
+
+diff --git a/crates/ui-egui/src/app.rs b/crates/ui-egui/src/app.rs
+index dc0680233a40b21cbc6869d21b315a4eefa9171e..684edfdf54f7c93a1aa92fcb5e4d80eddde9f69b 100644
+--- a/crates/ui-egui/src/app.rs
++++ b/crates/ui-egui/src/app.rs
+@@ -64,6 +64,8 @@ impl SheetApp {
+             fonts_han: None,
+             effective_dark: false,
+             desktop_theme: desktop_theme::DesktopTheme::default(),
++            save_jobs: Default::default(),
++            wake_ctx: None,
+             chart_cache: Default::default(),
+             desktop_dark: None,
+             name_box: None,
+@@ -169,6 +171,10 @@ impl SheetApp {
+         // Printing feedback is polled once per frame, here, so hidden windows and logic-only
+         // frames still see worker completion. `ui` and the desktop app no longer poll it.
+         self.poll_printing(ctx);
++        if self.wake_ctx.is_none() {
++            self.wake_ctx = Some(ctx.clone());
++        }
++        self.poll_saves(ctx);
+         self.guard_window_close(ctx);
+         #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+         updates_ui::tick(self, ctx);
+diff --git a/crates/ui-egui/src/app/commands.rs b/crates/ui-egui/src/app/commands.rs
+index 4825318bceef043eedadcd7a0b37010059ae05af..2e26186d2d0569e329a8202ead26bef6599100d2 100644
+--- a/crates/ui-egui/src/app/commands.rs
++++ b/crates/ui-egui/src/app/commands.rs
+@@ -54,6 +54,16 @@ impl SheetApp {
+         {
+             return r;
+         }
++        // A save with a known destination runs away from the interface where the host allows it
++        // (see `save_jobs`); its result is recorded in a later frame.
++        if matches!(id, "file.save" | "file.saveAs")
++            && let Some(doc) = self.session.active().map(|d| d.uid)
++        {
++            let path = params.get("path").and_then(Json::as_str).filter(|p| !p.is_empty()).map(str::to_string);
++            if (id == "file.save" || path.is_some()) && self.save_detached(doc, path, false, crate::save_jobs::AfterSave::Nothing) {
++                return Ok(json!({"pending": true}));
++            }
++        }
+         let before = self.session.active_window();
+         let zoom_from = matches!(id, "view.zoom" | "view.zoom100" | "view.zoomToSelection").then(|| crate::grid::Trace::key(self));
+         let r = self.session.run(id, params);
+diff --git a/crates/ui-egui/src/app/files.rs b/crates/ui-egui/src/app/files.rs
+index 0cbde92a8f089b3daee387454d9d35d5036cdd00..817cef2437714afdb676f4e45b32760141fa1c6c 100644
+--- a/crates/ui-egui/src/app/files.rs
++++ b/crates/ui-egui/src/app/files.rs
+@@ -112,7 +112,10 @@ impl SheetApp {
+         if autosave_due {
+             self.grid.last_autosave = now;
+             self.store_view_state();
+-            let _ = self.session.run("file.save", json!({}));
++            let doc = self.session.active().map(|d| d.uid);
++            if !doc.is_some_and(|doc| self.save_detached(doc, None, true, crate::save_jobs::AfterSave::Nothing)) {
++                let _ = self.session.run("file.save", json!({}));
++            }
+         } else if self.ui.autosave && dirty_xlsx {
+             // Keep checking even when no input arrives while the window is hidden.
+             ctx.request_repaint_after(std::time::Duration::from_secs(2));
+diff --git a/crates/ui-egui/src/app/quit.rs b/crates/ui-egui/src/app/quit.rs
+index 7f364829fc24114e5d20e97b970b808cf14623dc..1990d55ed7369557d6ef3c4025310c2a15f8282e 100644
+--- a/crates/ui-egui/src/app/quit.rs
++++ b/crates/ui-egui/src/app/quit.rs
+@@ -7,6 +7,11 @@ impl SheetApp {
+         if self.native_windows || self.allow_close || !ctx.input(|i| i.viewport().close_requested()) {
+             return;
+         }
++        // A save on its way is finished first; the close goes on after it.
++        if self.hold_close_for_saves() {
++            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
++            return;
++        }
+         // A cell still being edited is part of the workbook, as for File › Close.
+         if !self.commit_edit(0, 0, false, false) {
+             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+@@ -35,7 +40,12 @@ impl SheetApp {
+     /// Asks about the next unsaved workbook before quitting, in its window, or closes the app
+     /// once none is left.
+     pub(crate) fn continue_quit(&mut self, ctx: &egui::Context) {
+-        let dirty = self.session.documents().iter().find(|d| d.is_dirty()).map(|d| d.uid);
++        // A workbook whose save is on its way is not asked about: its turn comes when the file is
++        // written (it closes then, or is asked about if it was edited since).
++        let dirty = self.session.documents().iter().find(|d| d.is_dirty() && !self.save_pending_for(d.uid)).map(|d| d.uid);
++        if dirty.is_none() && self.hold_close_for_saves() {
++            return;
++        }
+         match dirty.and_then(|uid| self.session.doc_window(uid)) {
+             Some(window) => {
+                 // Its window comes forward (the native window too: see `doc_windows`).
+@@ -69,6 +79,12 @@ impl SheetApp {
+                 if !self.commit_edit(0, 0, false, false) {
+                     return false;
+                 }
++                // Away from the interface where possible: the workbook closes once the file is written.
++                if let Some(doc) = self.session.active().map(|d| d.uid)
++                    && self.save_detached(doc, None, false, crate::save_jobs::AfterSave::Close { quitting })
++                {
++                    return true;
++                }
+                 self.run_or_alert("file.save", json!({}));
+                 if self.session.active().is_some_and(|x| !x.is_dirty()) {
+                     self.run_or_alert("file.close", json!({"force": true, "document": true}));
+diff --git a/crates/ui-egui/src/control.rs b/crates/ui-egui/src/control.rs
+index 602d5ccdfaa5192133c45dcaa06ba01b495efb57..8a9243e1d4c152b81aa0295d37fafeaad9abab37 100644
+--- a/crates/ui-egui/src/control.rs
++++ b/crates/ui-egui/src/control.rs
+@@ -244,6 +244,12 @@ fn filter_commands(commands: Vec<Json>, search: Option<&str>) -> Vec<Json> {
+ 
+ /// Dispatches one control request: commands, inspection, UI state, dialogs, editing, synthetic input, open/save/quit and screenshots. Unknown methods (and unknown command ids) return an error. Immediate answers request a repaint; `ui.screenshot` is admitted asynchronously instead of being answered here.
+ pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -> Outcome {
++    // A control request answers with what its command did, so a save it asks for is complete
++    // when the answer goes out.
++    app.with_inline_saves(|app| handle_request(app, ctx, method, p))
++}
++
++fn handle_request(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -> Outcome {
+     let s = |k: &str| p.get(k).and_then(Json::as_str);
+     let f = |k: &str| p.get(k).and_then(Json::as_f64).unwrap_or(0.0) as f32;
+     let out = match method {
+diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
+index b51f072c0f6ab68f0eb62b3d798e0dd2cd4ca836..d566b4aaee56f13a41c2b3fa3bd274f2f20170f2 100644
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -74,11 +74,12 @@ pub use control::{ControlRequest, ControlResponse};
+ 
+ mod app;
+ mod clock;
++mod save_jobs;
+ mod services;
+ mod state;
+ 
+ pub use clock::{monotonic_ms, now_ms};
+-pub use services::{Chrome, Inbox, Services};
++pub use services::{Chrome, DetachedTask, Inbox, RunDetached, Services};
+ pub use state::{NoticeKind, OpenWindow, SaveAnswer, SheetView};
+ pub mod desktop_theme;
+ 
+@@ -272,6 +273,10 @@ pub struct SheetApp {
+     effective_dark: bool,
+     /// The desktop's light/dark choice, watched while the app runs (Linux has no winit answer).
+     desktop_theme: desktop_theme::DesktopTheme,
++    /// Saves on their way on the host's workers ([`save_jobs`]).
++    save_jobs: save_jobs::SaveJobs,
++    /// The context of the window, for a worker to ask for a frame when it is done.
++    wake_ctx: Option<egui::Context>,
+     /// Charts' drawing primitives, kept while their workbook and layout stay the same.
+     chart_cache: std::cell::RefCell<chart_cache::ChartCache>,
+     /// The last answer [`desktop_theme`] gave, so a frame that asks costs nothing.
+diff --git a/crates/ui-egui/src/save_jobs.rs b/crates/ui-egui/src/save_jobs.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..44fd112e85fbbd1c3bf752196fe3a0e9ea7554d6
+--- /dev/null
++++ b/crates/ui-egui/src/save_jobs.rs
+@@ -0,0 +1,223 @@
++//! Saves that run away from the interface.
++//!
++//! Serializing a workbook and writing the file can take long enough to freeze the window. When
++//! the host provides [`Services::run_detached`](crate::Services::run_detached), Save, Save As
++//! and AutoSave take the workbook's snapshot in the frame they are asked in, hand the writing
++//! to the host, and record the result in the frame after it is done (the engine's
++//! `save_job`). The workbook can be edited meanwhile: an edit made while the file is written
++//! stays unsaved.
++//!
++//! Rules kept here:
++//! - one file is written by one job at a time, also when two workbooks save to the same path;
++//! - an explicit save asked for while that workbook or file is being written is not dropped:
++//!   it waits and then writes the workbook as it is by then. An AutoSave in that case is left
++//!   out (the next one comes by itself);
++//! - a failed save says so and leaves the workbook open and unsaved;
++//! - a save started from "Save Changes?" closes the workbook only after the file is written,
++//!   and asks again when the workbook was edited meanwhile;
++//! - the window does not close while a save is on its way.
++//!
++//! Without the service, while actions are recorded or a macro is debugged, for a PDF and for
++//! commands from the control channel, `file.save` runs as one call, as before.
++
++use std::collections::VecDeque;
++use std::sync::mpsc::{Receiver, Sender, channel};
++
++use gridcraft_engine::save_job::SaveCompleted;
++use serde_json::json;
++
++use super::SheetApp;
++
++/// What follows a save that succeeded.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum AfterSave {
++    Nothing,
++    /// Close the workbook (the answer "Save" to "Save Changes?"); `quitting`: then go on closing
++    /// the app.
++    Close {
++        quitting: bool,
++    },
++}
++
++struct Running {
++    doc: u64,
++    path: String,
++    after: AfterSave,
++}
++
++struct Waiting {
++    doc: u64,
++    path: String,
++    after: AfterSave,
++}
++
++type Finished = (u64, String, Result<SaveCompleted, String>);
++
++pub(crate) struct SaveJobs {
++    running: Vec<Running>,
++    waiting: VecDeque<Waiting>,
++    finished: (Sender<Finished>, Receiver<Finished>),
++    /// The window was asked to close while a save was on its way: go on once none is.
++    quit_when_done: bool,
++    /// While above zero, saves run as one call (the control channel answers with the result).
++    inline: u32,
++}
++
++impl Default for SaveJobs {
++    fn default() -> Self {
++        Self { running: Vec::new(), waiting: VecDeque::new(), finished: channel(), quit_when_done: false, inline: 0 }
++    }
++}
++
++/// Whether two paths name one file, as far as can be told without it existing: the same after
++/// resolving what exists of them, without regard to case (most AROS file systems ignore it, and
++/// treating two files as one here only makes their saves take turns).
++fn same_file(a: &str, b: &str) -> bool {
++    let resolve = |p: &str| {
++        let path = std::path::Path::new(p);
++        let resolved = std::fs::canonicalize(path).ok().or_else(|| {
++            let (dir, name) = (path.parent()?, path.file_name()?);
++            Some(std::fs::canonicalize(dir).ok()?.join(name))
++        });
++        resolved.unwrap_or_else(|| path.to_path_buf()).to_string_lossy().to_lowercase()
++    };
++    a == b || resolve(a) == resolve(b)
++}
++
++impl SheetApp {
++    /// Saves on their way or waiting for their turn.
++    pub fn saves_pending(&self) -> usize {
++        self.save_jobs.running.len() + self.save_jobs.waiting.len()
++    }
++
++    /// Whether a save of workbook `doc` is on its way or waiting.
++    pub(crate) fn save_pending_for(&self, doc: u64) -> bool {
++        self.save_jobs.running.iter().any(|r| r.doc == doc) || self.save_jobs.waiting.iter().any(|w| w.doc == doc)
++    }
++
++    /// Runs `f` with saves as one call each: for callers that answer with the save's result.
++    pub(crate) fn with_inline_saves<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
++        self.save_jobs.inline += 1;
++        let r = f(self);
++        self.save_jobs.inline = self.save_jobs.inline.saturating_sub(1);
++        r
++    }
++
++    /// Starts saving workbook `doc` away from the interface, to `path` or to its own file.
++    /// `false`: not possible here (see the module text); the caller runs `file.save`. `true`:
++    /// the save is on its way or waits for its turn, or it was an AutoSave left out because
++    /// that workbook or file is being written.
++    pub(crate) fn save_detached(&mut self, doc: u64, path: Option<String>, auto: bool, after: AfterSave) -> bool {
++        if self.save_jobs.inline > 0 || self.services.run_detached.is_none() || self.wake_ctx.is_none() || !self.session.save_can_be_detached() {
++            return false;
++        }
++        // The scroll position and active cell are saved with the file.
++        if self.session.active().is_some_and(|d| d.uid == doc) {
++            self.store_view_state();
++        }
++        let Ok(Some(job)) = self.session.prepare_save(doc, path.as_deref()) else { return false };
++        let target = job.path().to_string();
++        let busy = self.save_jobs.running.iter().any(|r| r.doc == doc || same_file(&r.path, &target));
++        if busy {
++            if !auto {
++                // Written when its turn comes, from the workbook as it is then.
++                match self.save_jobs.waiting.iter_mut().find(|w| w.doc == doc && w.path == target) {
++                    Some(w) if after != AfterSave::Nothing => w.after = after,
++                    Some(_) => {}
++                    None => self.save_jobs.waiting.push_back(Waiting { doc, path: target, after }),
++                }
++            }
++            return true;
++        }
++        self.start_save(job, after);
++        true
++    }
++
++    fn start_save(&mut self, job: gridcraft_engine::save_job::SaveJob, after: AfterSave) {
++        let (doc, path) = (job.doc(), job.path().to_string());
++        let (Some(run), Some(ctx)) = (self.services.run_detached.as_ref(), self.wake_ctx.clone()) else { return };
++        let finished = self.save_jobs.finished.0.clone();
++        let sent_path = path.clone();
++        let task: crate::services::DetachedTask = Box::new(move || {
++            let result = job.run().map_err(|e| e.to_string());
++            let _ = finished.send((doc, sent_path, result));
++            ctx.request_repaint();
++        });
++        // A host that cannot take the job now gives it back: it runs here, and its result is
++        // recorded like any other.
++        if let Err(task) = run(task) {
++            task();
++        }
++        self.save_jobs.running.push(Running { doc, path, after });
++    }
++
++    /// Records the saves that finished and starts those whose turn has come. Called every frame.
++    pub(crate) fn poll_saves(&mut self, ctx: &egui::Context) {
++        while let Ok((doc, path, result)) = self.save_jobs.finished.1.try_recv() {
++            let after = match self.save_jobs.running.iter().position(|r| r.doc == doc && r.path == path) {
++                Some(i) => self.save_jobs.running.remove(i).after,
++                None => AfterSave::Nothing,
++            };
++            match result {
++                Ok(done) => {
++                    self.session.finish_save(done);
++                    self.session.note_detached_save(&path);
++                    self.after_save(doc, after, ctx);
++                }
++                // The workbook stays open and unsaved; a close that waited for this save is off.
++                Err(e) => {
++                    self.save_jobs.quit_when_done = false;
++                    self.message = Some(("GridCraft".into(), e));
++                }
++            }
++        }
++        // Waiting saves whose workbook and file are free now, oldest first.
++        let mut i = 0;
++        while i < self.save_jobs.waiting.len() {
++            let free =
++                self.save_jobs.waiting.get(i).is_some_and(|w| !self.save_jobs.running.iter().any(|r| r.doc == w.doc || same_file(&r.path, &w.path)));
++            if !free {
++                i += 1;
++                continue;
++            }
++            let Some(w) = self.save_jobs.waiting.remove(i) else { break };
++            // A workbook closed meanwhile has nothing to write.
++            if let Ok(Some(job)) = self.session.prepare_save(w.doc, Some(&w.path)) {
++                self.start_save(job, w.after);
++            }
++        }
++        if self.saves_pending() == 0 && std::mem::take(&mut self.save_jobs.quit_when_done) {
++            self.continue_quit(ctx);
++        }
++    }
++
++    fn after_save(&mut self, doc: u64, after: AfterSave, ctx: &egui::Context) {
++        let AfterSave::Close { quitting } = after else { return };
++        let Some(dirty) = self.session.documents().iter().find(|d| d.uid == doc).map(|d| d.is_dirty()) else { return };
++        if let Some(window) = self.session.doc_window(doc)
++            && self.ui_window() != Some(window)
++        {
++            self.enter_window(window);
++        }
++        if dirty {
++            // Edited after "Save" was chosen: those changes are asked about again.
++            let title = self.session.active().map(|d| d.display_title()).unwrap_or_default();
++            self.open_dialog("saveChanges", json!({"title": title, "quit": quitting}));
++            return;
++        }
++        self.run_or_alert("file.close", json!({"force": true, "document": true}));
++        if quitting {
++            self.continue_quit(ctx);
++        }
++    }
++
++    /// The window is closing: holds the close back while a save is on its way, and goes on with
++    /// it afterwards. Returns whether the close has to wait.
++    pub(crate) fn hold_close_for_saves(&mut self) -> bool {
++        if self.saves_pending() == 0 {
++            return false;
++        }
++        self.save_jobs.quit_when_done = true;
++        true
++    }
++}
+diff --git a/crates/ui-egui/src/services.rs b/crates/ui-egui/src/services.rs
+index 20b8da851e530b833f3975f5dc7a67e435f19aec..8ce87e62aae479e3121fe6da8fb1d47ae157c359 100644
+--- a/crates/ui-egui/src/services.rs
++++ b/crates/ui-egui/src/services.rs
+@@ -5,6 +5,10 @@ type OpenUrl = Box<dyn Fn(&str)>;
+ type CopyHtml = Box<dyn FnMut(&str, &str) -> Result<(), String>>;
+ type Download = Box<dyn Fn(&str, &[u8])>;
+ type PrintPdf = Box<dyn Fn(&[u8])>;
++/// Work handed to the host to run away from the interface.
++pub type DetachedTask = Box<dyn FnOnce() + Send + 'static>;
++/// Runs a task on another thread, or gives it back when it cannot take it now.
++pub type RunDetached = Box<dyn Fn(DetachedTask) -> Result<(), DetachedTask>>;
+ 
+ /// Host services the platform shell provides (file pickers, opening URLs).
+ #[derive(Default)]
+@@ -14,6 +18,9 @@ pub struct Services {
+     /// Desktop: submit the PDF with the chosen settings on a worker.
+     pub print_native: Option<printing::Submit>,
+     pub pick_open: Option<Box<dyn Fn() -> Option<String>>>,
++    /// Runs work away from the interface thread (a worker pool). With it, saving a workbook does
++    /// not freeze the window; without it everything runs where it is asked for.
++    pub run_detached: Option<RunDetached>,
+     pub pick_save: Option<PickSave>,
+     /// Native picture picker (PNG/JPEG), separate from workbook opening.
+     pub pick_picture: Option<Box<dyn Fn() -> Option<String>>>,
+diff --git a/crates/ui-egui/tests/save_jobs.rs b/crates/ui-egui/tests/save_jobs.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb783a743b75b1de365dd40ad0770c96d9f9b174
+--- /dev/null
++++ b/crates/ui-egui/tests/save_jobs.rs
+@@ -0,0 +1,304 @@
++//! Saving with a host that runs work away from the interface: the window goes on while the file
++//! is written, an edit made meanwhile stays unsaved, no save is dropped, a failure is shown, and
++//! closing waits for the file.
++
++#[path = "common/mod.rs"]
++#[allow(dead_code)]
++mod common;
++
++use std::cell::RefCell;
++use std::rc::Rc;
++
++use common::Harness;
++use gridcraft_engine::Session;
++use gridcraft_engine::core::{CellRef, Value};
++use gridcraft_ui_egui::{DetachedTask, Services, SheetApp};
++use serde_json::json;
++
++/// The host's worker, held by the test: tasks wait here until the test runs them.
++type Held = Rc<RefCell<Vec<DetachedTask>>>;
++
++fn harness_with_worker() -> (Harness, Held) {
++    let held: Held = Rc::default();
++    let queue = held.clone();
++    let services = Services {
++        run_detached: Some(Box::new(move |task| {
++            queue.borrow_mut().push(task);
++            Ok(())
++        })),
++        ..Default::default()
++    };
++    let mut session = Session::new();
++    session.new_workbook();
++    session.execute("cell.set", json!({"cell": "A1", "input": "1"})).unwrap();
++    let app = common::prepare(SheetApp::new(session, services));
++    let h = common::harness_with(common::builder().with_size(egui::vec2(1000.0, 700.0)), app, 4);
++    (h, held)
++}
++
++/// Runs the tasks the worker holds (as its thread would) and the frames that record them.
++fn work(h: &mut Harness, held: &Held) -> usize {
++    let tasks: Vec<DetachedTask> = held.borrow_mut().drain(..).collect();
++    let n = tasks.len();
++    for task in tasks {
++        task();
++    }
++    h.run_steps(3);
++    n
++}
++
++fn dir(name: &str) -> std::path::PathBuf {
++    let dir = std::env::temp_dir().join(format!("gridcraft-ui-save-{}-{name}", std::process::id()));
++    let _ = std::fs::remove_dir_all(&dir);
++    std::fs::create_dir_all(&dir).unwrap();
++    dir
++}
++
++fn value_in(path: &std::path::Path, cell: &str) -> Value {
++    let mut s = Session::new();
++    s.execute("file.open", json!({"path": path.to_str().unwrap()})).unwrap();
++    s.active().unwrap().wb.active().unwrap().value(CellRef::parse(cell).unwrap())
++}
++
++fn dirty(h: &Harness) -> bool {
++    h.state().session.active().unwrap().is_dirty()
++}
++
++fn set(h: &mut Harness, cell: &str, input: &str) {
++    h.state_mut().run("cell.set", json!({"cell": cell, "input": input})).unwrap();
++    h.run_steps(2);
++}
++
++#[test]
++fn the_window_goes_on_while_the_file_is_written() {
++    let dir = dir("goes-on");
++    let path = dir.join("book.xlsx");
++    let (mut h, held) = harness_with_worker();
++    let answer = h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    assert_eq!(answer, json!({"pending": true}));
++    assert_eq!(held.borrow().len(), 1, "the writing went to the worker");
++    assert_eq!(h.state().saves_pending(), 1);
++    // The worker has not run: frames, selection and typing go on.
++    h.run_steps(10);
++    set(&mut h, "B1", "typed while saving");
++    h.state_mut().run("selection.set", json!({"cell": "D4"})).unwrap();
++    h.run_steps(3);
++    assert!(!path.exists());
++    assert!(dirty(&h));
++    assert_eq!(work(&mut h, &held), 1);
++    assert_eq!(h.state().saves_pending(), 0);
++    assert_eq!(value_in(&path, "A1"), Value::Number(1.0));
++    assert_eq!(h.state().session.active().unwrap().path.as_deref(), path.to_str());
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn an_edit_made_while_saving_stays_unsaved_and_the_next_save_writes_it() {
++    let dir = dir("edit");
++    let path = dir.join("book.xlsx");
++    let (mut h, held) = harness_with_worker();
++    h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    set(&mut h, "A2", "2");
++    work(&mut h, &held);
++    assert_eq!(value_in(&path, "A2"), Value::Empty, "the file holds what was there when Save was asked");
++    assert!(dirty(&h), "the later edit is not marked saved");
++    h.state_mut().run("file.save", json!({})).unwrap();
++    work(&mut h, &held);
++    assert_eq!(value_in(&path, "A2"), Value::Number(2.0));
++    assert!(!dirty(&h));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn a_save_without_edits_meanwhile_leaves_the_workbook_clean() {
++    let dir = dir("clean");
++    let path = dir.join("book.xlsx");
++    let (mut h, held) = harness_with_worker();
++    h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    // Looking around is not an edit.
++    h.state_mut().run("selection.set", json!({"cell": "C3"})).unwrap();
++    h.run_steps(5);
++    work(&mut h, &held);
++    assert!(!dirty(&h));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn a_second_save_asked_while_the_first_is_written_is_not_dropped() {
++    let dir = dir("second");
++    let path = dir.join("book.xlsx");
++    let (mut h, held) = harness_with_worker();
++    h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    set(&mut h, "A2", "2");
++    h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    assert_eq!(held.borrow().len(), 1, "one job per file at a time");
++    assert_eq!(h.state().saves_pending(), 2);
++    // The first finishes; the second starts by itself, from the workbook as it is now.
++    assert_eq!(work(&mut h, &held), 1);
++    assert_eq!(held.borrow().len(), 1);
++    assert_eq!(work(&mut h, &held), 1);
++    assert_eq!(h.state().saves_pending(), 0);
++    assert_eq!(value_in(&path, "A2"), Value::Number(2.0));
++    assert!(!dirty(&h));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn autosave_is_left_out_while_the_file_is_being_written() {
++    let dir = dir("autosave");
++    let path = dir.join("book.xlsx");
++    let (mut h, held) = harness_with_worker();
++    h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    work(&mut h, &held);
++    // AutoSave on, a change, and the pause after it over: AutoSave saves away from the window.
++    h.state_mut().ui.autosave = true;
++    set(&mut h, "A3", "3");
++    h.state_mut().grid.last_autosave = gridcraft_ui_egui::monotonic_ms() - 3000.0;
++    h.run_steps(2);
++    assert_eq!(held.borrow().len(), 1, "AutoSave went to the worker");
++    // Another change and another AutoSave time while that one is still being written.
++    set(&mut h, "A4", "4");
++    h.state_mut().grid.last_autosave = gridcraft_ui_egui::monotonic_ms() - 3000.0;
++    h.run_steps(2);
++    assert_eq!(held.borrow().len(), 1, "no second job for the file");
++    assert_eq!(h.state().saves_pending(), 1, "and none waiting: the next AutoSave comes by itself");
++    work(&mut h, &held);
++    assert_eq!(value_in(&path, "A3"), Value::Number(3.0));
++    assert!(dirty(&h), "A4 is still to be saved");
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn a_failed_save_is_shown_and_the_workbook_stays_unsaved() {
++    let dir = dir("fail");
++    let path = dir.join("no-such-folder").join("book.xlsx");
++    let (mut h, held) = harness_with_worker();
++    h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    work(&mut h, &held);
++    assert_eq!(h.state().saves_pending(), 0);
++    assert!(dirty(&h));
++    assert_eq!(h.state().session.active().unwrap().path, None);
++    assert!(h.state().message.as_ref().is_some_and(|(_, text)| text.contains("book.xlsx")), "{:?}", h.state().message);
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn save_from_the_close_question_closes_after_the_file_is_written() {
++    let dir = dir("close");
++    let path = dir.join("book.xlsx");
++    let (mut h, held) = harness_with_worker();
++    h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    work(&mut h, &held);
++    set(&mut h, "A2", "2");
++    let uid = h.state().session.active().unwrap().uid;
++    let ctx = h.ctx.clone();
++    assert!(h.state_mut().answer_save_changes(gridcraft_ui_egui::SaveAnswer::Save, false, &ctx), "the question is settled");
++    h.run_steps(3);
++    assert!(h.state().session.documents().iter().any(|d| d.uid == uid), "still open while the file is written");
++    work(&mut h, &held);
++    assert!(!h.state().session.documents().iter().any(|d| d.uid == uid), "closed once it is");
++    assert_eq!(value_in(&path, "A2"), Value::Number(2.0));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn an_edit_after_choosing_save_keeps_the_workbook_open_and_asks_again() {
++    let dir = dir("close-edit");
++    let path = dir.join("book.xlsx");
++    let (mut h, held) = harness_with_worker();
++    h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    work(&mut h, &held);
++    set(&mut h, "A2", "2");
++    let uid = h.state().session.active().unwrap().uid;
++    let ctx = h.ctx.clone();
++    h.state_mut().answer_save_changes(gridcraft_ui_egui::SaveAnswer::Save, false, &ctx);
++    set(&mut h, "A3", "3");
++    work(&mut h, &held);
++    assert!(h.state().session.documents().iter().any(|d| d.uid == uid), "not closed: A3 is not in the file");
++    assert!(dirty(&h));
++    assert_eq!(h.state().dialog.as_ref().map(|d| d.name()), Some("saveChanges"));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn a_failed_save_from_the_close_question_keeps_the_workbook_open() {
++    let dir = dir("close-fail");
++    let path = dir.join("book.xlsx");
++    let (mut h, held) = harness_with_worker();
++    h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    work(&mut h, &held);
++    set(&mut h, "A2", "2");
++    // The folder goes away before the save from the question runs.
++    std::fs::remove_dir_all(&dir).unwrap();
++    let uid = h.state().session.active().unwrap().uid;
++    let ctx = h.ctx.clone();
++    h.state_mut().answer_save_changes(gridcraft_ui_egui::SaveAnswer::Save, false, &ctx);
++    work(&mut h, &held);
++    assert!(h.state().session.documents().iter().any(|d| d.uid == uid));
++    assert!(dirty(&h));
++    assert!(h.state().message.is_some());
++}
++
++#[test]
++fn a_host_that_cannot_take_the_job_gets_it_run_at_once() {
++    let dir = dir("refused");
++    let path = dir.join("book.xlsx");
++    let services = Services { run_detached: Some(Box::new(Err)), ..Default::default() };
++    let mut session = Session::new();
++    session.new_workbook();
++    session.execute("cell.set", json!({"cell": "A1", "input": "1"})).unwrap();
++    let mut h = common::harness_with(common::builder().with_size(egui::vec2(1000.0, 700.0)), common::prepare(SheetApp::new(session, services)), 4);
++    h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    assert!(path.exists(), "written before the call returns");
++    h.run_steps(3);
++    assert!(!dirty(&h));
++    assert_eq!(h.state().saves_pending(), 0);
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn without_the_service_save_is_one_call_as_before() {
++    let dir = dir("plain");
++    let path = dir.join("book.xlsx");
++    let mut session = Session::new();
++    session.new_workbook();
++    session.execute("cell.set", json!({"cell": "A1", "input": "1"})).unwrap();
++    let mut h = common::harness_with(common::builder().with_size(egui::vec2(1000.0, 700.0)), common::app(session), 4);
++    let answer = h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    assert_eq!(answer["path"], json!(path.to_str().unwrap()));
++    assert!(path.exists());
++    assert!(!dirty(&h));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn a_control_request_gets_its_save_complete() {
++    let dir = dir("control");
++    let path = dir.join("book.xlsx");
++    let (mut h, held) = harness_with_worker();
++    let ctx = h.ctx.clone();
++    let _ = gridcraft_ui_egui::control::handle(h.state_mut(), &ctx, "app.save", &json!({"path": path.to_str().unwrap()}));
++    assert!(path.exists(), "the answer to a control request means the file is written");
++    assert!(held.borrow().is_empty());
++    assert!(!dirty(&h));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn two_workbooks_saving_to_one_file_take_turns() {
++    let dir = dir("turns");
++    let path = dir.join("book.xlsx");
++    let (mut h, held) = harness_with_worker();
++    h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    // A second workbook, saved over the same file while the first is being written.
++    h.state_mut().run("file.new", json!({})).unwrap();
++    set(&mut h, "A1", "second workbook");
++    h.state_mut().run("file.save", json!({"path": path.to_str().unwrap()})).unwrap();
++    assert_eq!(held.borrow().len(), 1, "the second waits");
++    work(&mut h, &held);
++    assert_eq!(value_in(&path, "A1"), Value::Number(1.0));
++    assert_eq!(held.borrow().len(), 1, "then takes its turn");
++    work(&mut h, &held);
++    assert_eq!(value_in(&path, "A1"), Value::Text("second workbook".into()), "in the order they were asked");
++    let _ = std::fs::remove_dir_all(&dir);
++}

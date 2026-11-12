@@ -1,0 +1,398 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 16:18:25 +0100
+Subject: [PATCH] engine: a save in three steps (prepare, run, finish)
+
+file.save took the snapshot, serialized it, wrote the file and recorded the result in one call on the caller's thread. The steps are now separate: Session::prepare_save takes the path, the format and the workbook as it is (an immutable snapshot), SaveJob::run serializes and writes without a session, on any thread, and Session::finish_save records the result in its document by uid. file.save runs the three in a row, with the same bytes and the same document state as before. When the document was edited between the first and the last step, the file holds the snapshot, the edits stay and the document stays unsaved; its saved state is the snapshot, so undoing back to it makes it clean. A PDF and a workbook without a file are not prepared (file.save handles them). Session::save_can_be_detached says when the steps may be spread over frames: not while actions are recorded, a macro is debugged or an undo group is open.
+
+Tests: save_job (10); the engine suite passes unchanged.
+---
+ crates/engine/src/cmd/file.rs |  29 +--
+ crates/engine/src/lib.rs      |   1 +
+ crates/engine/src/save_job.rs | 325 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 331 insertions(+), 24 deletions(-)
+ create mode 100644 crates/engine/src/save_job.rs
+
+diff --git a/crates/engine/src/cmd/file.rs b/crates/engine/src/cmd/file.rs
+index aafb0850dea9fc5204c0f6746f6afe7312916463..8bcf0ff1716e9701048654b71d532e9265c0ea9c 100644
+--- a/crates/engine/src/cmd/file.rs
++++ b/crates/engine/src/cmd/file.rs
+@@ -119,30 +119,11 @@ fn save(s: &mut Session, p: &Json) -> Result<Json> {
+     if std::path::Path::new(&path).extension().and_then(std::ffi::OsStr::to_str).is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+         return super::print::export_pdf(s, &json!({"path": path}));
+     }
+-    let d = s.doc_mut()?;
+-    // The document's own file keeps the format its content had when opened; any other path
+-    // goes by its extension. Relative paths to linked workbooks are rewritten for the new folder.
+-    let kind = crate::io::FileKind::from_path(&path).or(d.content_kind.filter(|_| d.path.as_deref() == Some(path.as_str())));
+-    let rebased = crate::io::source_dir(&path).and_then(|f| gridcraft_xlsx::rebase_links(&d.wb, &f));
+-    let wb = rebased.as_ref().unwrap_or(&d.wb);
+-    let bytes = match kind {
+-        Some(kind) => crate::io::save_bytes_as(wb, &path, kind)?,
+-        None => crate::io::save_bytes(wb, &path)?,
+-    };
+-    crate::io::write_file(&path, &bytes)?;
+-    // Only a full-fidelity format clears the dirty flag and becomes the document's file.
+-    if matches!(kind, Some(crate::io::FileKind::Xlsx | crate::io::FileKind::Json)) {
+-        // The new file is the workbook's own now, so `CELL("filename")` reports it (#1489). Set
+-        // before the `saved` snapshot, or the workbook would read as dirty the moment it was
+-        // saved; and only when it changes, so an ordinary Save does not clone the workbook.
+-        let file = crate::io::source_path(&path);
+-        if d.wb.source_path != file {
+-            std::sync::Arc::make_mut(&mut d.wb).source_path = file;
+-        }
+-        d.saved = d.wb.clone();
+-        d.path = Some(path.clone());
+-    }
+-    Ok(json!({"path": path, "bytes": bytes.len()}))
++    // The same three steps a front end runs across frames (see `save_job`), here in a row.
++    let doc = s.doc()?.uid;
++    let job = s.prepare_save(doc, Some(&path))?.ok_or_else(|| bad("file.save", "nothing to write"))?;
++    let done = job.run()?;
++    Ok(s.finish_save(done))
+ }
+ 
+ fn save_as(s: &mut Session, p: &Json) -> Result<Json> {
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index 58979526cf004a753e2e4ba183e64204b555f2fd..fedfad4688846894855fd8930bbdb7849aa32c21 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -23,6 +23,7 @@ pub mod pivot_calc;
+ pub mod recent;
+ pub mod record;
+ pub mod sample;
++pub mod save_job;
+ pub mod selection;
+ pub mod tables;
+ pub mod windows;
+diff --git a/crates/engine/src/save_job.rs b/crates/engine/src/save_job.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..6bfbee5921a1da42d74b226c30f455ee29518bc9
+--- /dev/null
++++ b/crates/engine/src/save_job.rs
+@@ -0,0 +1,325 @@
++//! Saving a workbook in three steps, so that the slow one can run away from the interface.
++//!
++//! [`Session::prepare_save`] takes what the save needs from the session: where the file goes, in
++//! which format, and the workbook as it is now. The workbook is an immutable snapshot (the
++//! document's `Arc`), so the document can be edited while the job runs. [`SaveJob::run`]
++//! serializes that snapshot and writes the file; it touches no session and can run on any
++//! thread. [`Session::finish_save`] records the result in the document.
++//!
++//! `file.save` runs the three steps in a row, so both ways write the same bytes and leave the
++//! document in the same state. The difference shows only when the document changed between the
++//! first and the last step: the file then holds the snapshot, the document keeps the newer
++//! edits and stays unsaved, and its saved state is the snapshot (undoing back to it makes the
++//! document clean again).
++
++use std::sync::Arc;
++
++use serde_json::{Value as Json, json};
++
++use crate::model::Workbook;
++use crate::{EngineError, Result, Session, io};
++
++/// A save that has everything it needs. Dropping it saves nothing and changes nothing.
++#[derive(Debug)]
++pub struct SaveJob {
++    doc: u64,
++    path: String,
++    kind: Option<io::FileKind>,
++    /// What is written: the snapshot, or the snapshot with its links to other workbooks
++    /// rewritten for the file's folder.
++    written: Arc<Workbook>,
++    snapshot: Arc<Workbook>,
++}
++
++/// A written file, to be recorded with [`Session::finish_save`].
++#[derive(Debug)]
++pub struct SaveCompleted {
++    doc: u64,
++    path: String,
++    kind: Option<io::FileKind>,
++    snapshot: Arc<Workbook>,
++    bytes: usize,
++}
++
++impl SaveJob {
++    /// The workbook being saved ([`crate::DocState::uid`]).
++    pub fn doc(&self) -> u64 {
++        self.doc
++    }
++
++    /// The file being written: two jobs for one path must not run at the same time.
++    pub fn path(&self) -> &str {
++        &self.path
++    }
++
++    /// Serializes the snapshot and writes the file (through a temporary file, as every save).
++    /// Uses no session; on an error the file that was there is left as it was.
++    pub fn run(self) -> Result<SaveCompleted> {
++        let bytes = match self.kind {
++            Some(kind) => io::save_bytes_as(&self.written, &self.path, kind)?,
++            None => io::save_bytes(&self.written, &self.path)?,
++        };
++        io::write_file(&self.path, &bytes)?;
++        Ok(SaveCompleted { doc: self.doc, path: self.path, kind: self.kind, snapshot: self.snapshot, bytes: bytes.len() })
++    }
++}
++
++impl SaveCompleted {
++    pub fn doc(&self) -> u64 {
++        self.doc
++    }
++
++    pub fn path(&self) -> &str {
++        &self.path
++    }
++}
++
++/// A PDF is a print of the sheet, made with the session: not a workbook write.
++fn is_pdf(path: &str) -> bool {
++    std::path::Path::new(path).extension().and_then(std::ffi::OsStr::to_str).is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
++}
++
++impl Session {
++    /// Whether a save may be split across frames now. While actions are recorded, a macro is
++    /// debugged or an undo group is open, `file.save` is part of what those keep track of, so
++    /// it runs as one command.
++    pub fn save_can_be_detached(&self) -> bool {
++        self.depth == 0
++            && self.recorder.is_none()
++            && self.recording.is_none()
++            && self.macro_recording.is_none()
++            && self.macro_debug.is_none()
++            && self.groups.is_empty()
++    }
++
++    /// Prepares saving workbook `doc` to `path`, or to its own file without one. `None`: this is
++    /// not a plain workbook write (the workbook has no file yet, or `path` is a PDF) and
++    /// `file.save` has to handle it. Changes nothing.
++    pub fn prepare_save(&self, doc: u64, path: Option<&str>) -> Result<Option<SaveJob>> {
++        let d = self.docs.iter().find(|d| d.uid == doc).ok_or(EngineError::NoDocument)?;
++        let Some(path) = path.map(str::to_string).or_else(|| d.path.clone()) else { return Ok(None) };
++        if is_pdf(&path) {
++            return Ok(None);
++        }
++        // The document's own file keeps the format its content had when opened; any other path
++        // goes by its extension. Relative paths to linked workbooks are rewritten for the new folder.
++        let kind = io::FileKind::from_path(&path).or(d.content_kind.filter(|_| d.path.as_deref() == Some(path.as_str())));
++        let written = io::source_dir(&path).and_then(|f| gridcraft_xlsx::rebase_links(&d.wb, &f)).map(Arc::new).unwrap_or_else(|| d.wb.clone());
++        Ok(Some(SaveJob { doc, path, kind, written, snapshot: d.wb.clone() }))
++    }
++
++    /// Records a written file in its document: the file becomes the document's own, and the
++    /// snapshot that was written becomes its saved state. A document edited since the snapshot
++    /// keeps its edits and stays unsaved; one closed meanwhile is left alone.
++    pub fn finish_save(&mut self, done: SaveCompleted) -> Json {
++        let result = json!({"path": done.path, "bytes": done.bytes});
++        // Only a full-fidelity format clears the dirty flag and becomes the document's file.
++        if !matches!(done.kind, Some(io::FileKind::Xlsx | io::FileKind::Json)) {
++            return result;
++        }
++        let Some(d) = self.docs.iter_mut().find(|d| d.uid == done.doc) else { return result };
++        let unchanged = Arc::ptr_eq(&d.wb, &done.snapshot);
++        // The new file is the workbook's own now, so `CELL("filename")` reports it (#1489). Set
++        // before the `saved` snapshot, or the workbook would read as dirty the moment it was
++        // saved; and only when it changes, so an ordinary Save does not clone the workbook.
++        let file = io::source_path(&done.path);
++        if d.wb.source_path != file {
++            Arc::make_mut(&mut d.wb).source_path = file;
++        }
++        d.saved = if unchanged { d.wb.clone() } else { done.snapshot };
++        d.path = Some(done.path);
++        result
++    }
++
++    /// Notes a save that ran in steps in the journal, as `file.save` itself would have been.
++    pub fn note_detached_save(&mut self, path: &str) {
++        if self.journal_paused == 0 {
++            self.push_journal("file.save", json!({"path": path}));
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::core::{CellRef, Value};
++
++    fn dir(name: &str) -> std::path::PathBuf {
++        let dir = std::env::temp_dir().join(format!("gridcraft-save-job-{}-{name}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&dir);
++        std::fs::create_dir_all(&dir).unwrap();
++        dir
++    }
++
++    fn session_with(cell: &str, input: &str) -> (Session, u64) {
++        let mut s = Session::new();
++        s.new_workbook();
++        s.execute("cell.set", json!({"cell": cell, "input": input})).unwrap();
++        let uid = s.active().unwrap().uid;
++        (s, uid)
++    }
++
++    fn value_in(path: &std::path::Path, cell: &str) -> Value {
++        let mut s = Session::new();
++        s.execute("file.open", json!({"path": path.to_str().unwrap()})).unwrap();
++        s.active().unwrap().wb.active().unwrap().value(CellRef::parse(cell).unwrap())
++    }
++
++    #[test]
++    fn the_three_steps_leave_what_file_save_leaves() {
++        let dir = dir("steps");
++        let (mut stepped, uid) = session_with("A1", "7");
++        let path = dir.join("stepped.xlsx");
++        let job = stepped.prepare_save(uid, path.to_str()).unwrap().unwrap();
++        assert_eq!((job.doc(), job.path()), (uid, path.to_str().unwrap()));
++        let done = job.run().unwrap();
++        let answer = stepped.finish_save(done);
++
++        let (mut whole, _) = session_with("A1", "7");
++        let other = dir.join("whole.xlsx");
++        let expected = whole.execute("file.save", json!({"path": other.to_str().unwrap()})).unwrap();
++
++        assert_eq!(answer["bytes"], expected["bytes"]);
++        for (s, p) in [(&stepped, &path), (&whole, &other)] {
++            let d = s.active().unwrap();
++            assert!(!d.is_dirty());
++            assert_eq!(d.path.as_deref(), p.to_str());
++            assert_eq!(d.wb.source_path.as_deref(), Some(p.as_path()));
++            assert_eq!(value_in(p, "A1"), Value::Number(7.0));
++        }
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
++    #[test]
++    fn an_edit_made_while_the_file_is_written_is_not_marked_saved() {
++        let dir = dir("edit");
++        let (mut s, uid) = session_with("A1", "1");
++        let path = dir.join("book.xlsx");
++        let job = s.prepare_save(uid, path.to_str()).unwrap().unwrap();
++        // The job is away on a worker; the user goes on typing.
++        s.execute("cell.set", json!({"cell": "A2", "input": "2"})).unwrap();
++        let done = job.run().unwrap();
++        s.finish_save(done);
++
++        assert_eq!(value_in(&path, "A1"), Value::Number(1.0));
++        assert_eq!(value_in(&path, "A2"), Value::Empty, "the file holds the snapshot");
++        let d = s.active().unwrap();
++        assert!(d.is_dirty(), "the later edit is not saved");
++        assert_eq!(d.wb.active().unwrap().value(CellRef::parse("A2").unwrap()), Value::Number(2.0), "and is not lost");
++        assert_eq!(d.path.as_deref(), path.to_str(), "the file is the document's own all the same");
++        // Undoing the edit returns to exactly what the file holds.
++        s.execute("edit.undo", json!({})).unwrap();
++        assert!(!s.active().unwrap().is_dirty());
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
++    #[test]
++    fn a_result_is_recorded_in_its_own_document_whichever_is_active() {
++        let dir = dir("other");
++        let (mut s, first) = session_with("A1", "1");
++        let path = dir.join("first.xlsx");
++        let job = s.prepare_save(first, path.to_str()).unwrap().unwrap();
++        s.new_workbook();
++        s.execute("cell.set", json!({"cell": "A1", "input": "second"})).unwrap();
++        let second = s.active().unwrap().uid;
++        assert_ne!(first, second);
++        s.finish_save(job.run().unwrap());
++        let docs = s.documents();
++        let (a, b) = (docs.iter().find(|d| d.uid == first).unwrap(), docs.iter().find(|d| d.uid == second).unwrap());
++        assert!(!a.is_dirty());
++        assert_eq!(a.path.as_deref(), path.to_str());
++        assert!(b.is_dirty(), "the active workbook was not the one saved");
++        assert_eq!(b.path, None);
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
++    #[test]
++    fn a_document_closed_meanwhile_is_left_alone() {
++        let dir = dir("closed");
++        let (mut s, uid) = session_with("A1", "1");
++        let path = dir.join("book.xlsx");
++        let job = s.prepare_save(uid, path.to_str()).unwrap().unwrap();
++        s.execute("file.close", json!({"force": true, "document": true})).unwrap();
++        let before = s.documents().len();
++        let answer = s.finish_save(job.run().unwrap());
++        assert_eq!(answer["path"], json!(path.to_str().unwrap()));
++        assert_eq!(s.documents().len(), before, "nothing comes back");
++        assert_eq!(value_in(&path, "A1"), Value::Number(1.0), "the accepted save was written");
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
++    #[test]
++    fn a_format_that_loses_content_keeps_the_document_unsaved() {
++        let dir = dir("csv");
++        let (mut s, uid) = session_with("A1", "1");
++        let path = dir.join("book.csv");
++        let job = s.prepare_save(uid, path.to_str()).unwrap().unwrap();
++        s.finish_save(job.run().unwrap());
++        let d = s.active().unwrap();
++        assert!(d.is_dirty());
++        assert_eq!(d.path, None);
++        assert!(path.exists());
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
++    #[test]
++    fn a_failed_write_changes_nothing() {
++        let dir = dir("fail");
++        let (s, uid) = session_with("A1", "1");
++        let path = dir.join("missing-folder").join("book.xlsx");
++        let job = s.prepare_save(uid, path.to_str()).unwrap().unwrap();
++        assert!(job.run().is_err());
++        let d = s.active().unwrap();
++        assert!(d.is_dirty());
++        assert_eq!(d.path, None);
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
++    #[test]
++    fn saving_twice_over_one_file_replaces_it() {
++        let dir = dir("twice");
++        let (mut s, uid) = session_with("A1", "1");
++        let path = dir.join("book.xlsx");
++        let job = s.prepare_save(uid, path.to_str()).unwrap().unwrap();
++        s.finish_save(job.run().unwrap());
++        s.execute("cell.set", json!({"cell": "A1", "input": "2"})).unwrap();
++        // The document's own file now: no path needed.
++        let job = s.prepare_save(uid, None).unwrap().unwrap();
++        s.finish_save(job.run().unwrap());
++        assert_eq!(value_in(&path, "A1"), Value::Number(2.0));
++        assert!(!s.active().unwrap().is_dirty());
++        assert!(!dir.join("book.xlsx.sctmp").exists());
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
++    #[test]
++    fn a_workbook_without_a_file_and_a_pdf_are_left_to_file_save() {
++        let (s, uid) = session_with("A1", "1");
++        assert!(s.prepare_save(uid, None).unwrap().is_none());
++        assert!(s.prepare_save(uid, Some("print.PDF")).unwrap().is_none());
++        assert!(s.prepare_save(uid + 1000, Some("x.xlsx")).is_err());
++    }
++
++    #[test]
++    fn a_job_can_run_on_another_thread() {
++        let dir = dir("thread");
++        let (mut s, uid) = session_with("A1", "9");
++        let path = dir.join("book.xlsx");
++        let job = s.prepare_save(uid, path.to_str()).unwrap().unwrap();
++        let done = std::thread::spawn(move || job.run()).join().unwrap().unwrap();
++        s.finish_save(done);
++        assert!(!s.active().unwrap().is_dirty());
++        assert_eq!(value_in(&path, "A1"), Value::Number(9.0));
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
++    #[test]
++    fn a_save_is_split_only_when_nothing_keeps_track_of_commands() {
++        let (mut s, _) = session_with("A1", "1");
++        assert!(s.save_can_be_detached());
++        let token = s.group_begin("Group").unwrap();
++        assert!(!s.save_can_be_detached());
++        s.group_end(token).unwrap();
++        assert!(s.save_can_be_detached());
++    }
++}

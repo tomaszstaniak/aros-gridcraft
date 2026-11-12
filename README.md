@@ -4,19 +4,19 @@ An AROS port of [GridCraft](https://github.com/storytold/gridcraft), a spreadshe
 
 ## Download and run
 
-[Download 0.19.1](https://github.com/tomaszstaniak/aros-gridcraft/releases/tag/v0.19.1) for one of these systems, or install `gridcraft` with arospkg:
+[Download 0.19.1 (revision 1)](https://github.com/tomaszstaniak/aros-gridcraft/releases/tag/v0.19.1-r1) for one of these systems, or install `gridcraft` with arospkg:
 
 | Package | System |
 |---|---|
-| `GridCraft-0.19.1-aros-x86_64-abiv11-pc.zip` | AROS x86_64, ABIv11 (AROS One 1.3) |
-| `GridCraft-0.19.1-aros-x86_64-abiv1-pc.zip` | AROS x86_64, mainline ABIv1 (nightly 2026-11-10) |
-| `GridCraft-0.19.1-aros-aarch64-abiv1-raspi.zip` | AROS on Raspberry Pi, AArch64 ABIv1 (mainline nightly 2026-11-10) |
+| `GridCraft-0.19.1-r1-aros-x86_64-abiv11-pc.zip` | AROS x86_64, ABIv11 (AROS One 1.3) |
+| `GridCraft-0.19.1-r1-aros-x86_64-abiv1-pc.zip` | AROS x86_64, mainline ABIv1 (nightly 2026-11-10) |
+| `GridCraft-0.19.1-r1-aros-aarch64-abiv1-raspi.zip` | AROS on Raspberry Pi, AArch64 ABIv1 (mainline nightly 2026-11-10) |
 
 Each package runs only on the system it was built for and includes GridCraft and `gridcraft-cli`. Unpack the archive anywhere writable and double-click the GridCraft icon; from a Shell, run `GridCraft [file]`. The program takes the stack it needs itself. `ReadMe.txt` in the drawer describes installation, the command line, the clipboard and the interface renderer.
 
 ## Known limitations
 
-The whole window is redrawn on every change, so the interface follows with a delay on slow machines and in emulators. There is no printing (export to PDF instead), no file drops and no formatted clipboard content, and all workbooks share one window. OpenGL was not tested in this release, and the Raspberry Pi build was tested only in an emulator. The [release notes](docs/releases/v0.19.1.md) list the rest.
+The whole window is redrawn on every change, so the interface follows with a delay on slow machines and in emulators. There is no printing (export to PDF instead), no file drops and no formatted clipboard content, and all workbooks share one window. OpenGL was not tested in this release, and the Raspberry Pi build was tested only in an emulator. The [release notes](docs/releases/v0.19.1-r1.md) list the rest.
 
 ## Build from source
 

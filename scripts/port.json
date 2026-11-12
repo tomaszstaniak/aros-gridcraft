@@ -7,5 +7,10 @@
     "gridcraft-aros": "GridCraft",
     "gridcraft-cli": "gridcraft-cli"
   },
-  "tools": {}
+  "tools": {
+    "job-probe": [
+      "../egui-aros/examples/job-probe",
+      "job-probe"
+    ]
+  }
 }

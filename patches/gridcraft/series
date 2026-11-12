@@ -4,3 +4,7 @@
 0004-ui-egui-keys-typed-faster-than-the-frames-come-keep-.patch
 0005-engine-close-the-temporary-file-before-it-replaces-t.patch
 0006-AROS-no-fontconfig-query-at-start-up.patch
+0007-ui-egui-keep-a-chart-s-drawing-primitives-between-fr.patch
+0008-engine-a-save-in-three-steps-prepare-run-finish.patch
+0009-ui-egui-Save-Save-As-and-AutoSave-write-the-file-awa.patch
+0010-gridcraft-aros-files-are-written-by-a-worker-pool.patch

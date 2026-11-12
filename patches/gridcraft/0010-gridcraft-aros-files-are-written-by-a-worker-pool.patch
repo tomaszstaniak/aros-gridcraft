@@ -1,0 +1,156 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 16:25:10 +0100
+Subject: [PATCH] gridcraft-aros: files are written by a worker pool
+
+The AROS program gives the interface a worker pool (craft-jobs from egui-aros: two workers, four waiting jobs) as Services::run_detached, so Save, Save As and AutoSave no longer freeze the window while a workbook is serialized and written. A worker asks for a frame when a file is done; the loop still has no idle poll. A job the pool cannot take runs in the window loop. --test-steps quit and the exit wait for saves on their way: at exit the pool finishes what it accepted (up to two minutes) before the program ends. If the workers cannot be started, everything runs in the window loop as before.
+---
+ apps/gridcraft-aros/Cargo.toml      |  2 ++
+ apps/gridcraft-aros/src/main.rs     | 36 +++++++++++++++++++++++++----
+ apps/gridcraft-aros/src/services.rs | 29 ++++++++++++++++++++++-
+ 3 files changed, 62 insertions(+), 5 deletions(-)
+
+diff --git a/apps/gridcraft-aros/Cargo.toml b/apps/gridcraft-aros/Cargo.toml
+index 3ac19f5b528f40818762214fc1a20f86f4e5bc4a..567bfa912de0a8cd68d717680687510ee2247a56 100644
+--- a/apps/gridcraft-aros/Cargo.toml
++++ b/apps/gridcraft-aros/Cargo.toml
+@@ -24,6 +24,8 @@ egui = { workspace = true, features = ["default_fonts"] }
+ egui-aros = { version = "0.1", features = ["asl", "glow"] }
+ # Its minimum_stack! macro (egui_aros::startup is the same crate).
+ aros-startup = "0.1"
++# The worker pool that writes files away from the window loop (from egui-aros as well).
++craft-jobs = "0.1"
+ serde_json = { workspace = true }
+ log = { workspace = true }
+ # --screenshot writes PNG; a picture pasted from the clipboard is handed over as an RgbaImage.
+diff --git a/apps/gridcraft-aros/src/main.rs b/apps/gridcraft-aros/src/main.rs
+index 70d760bed8fa3f986f36b6df73b6d9a3f2038378..7b5410279fd8c35997556c1e6bb6a3519a11a95d 100644
+--- a/apps/gridcraft-aros/src/main.rs
++++ b/apps/gridcraft-aros/src/main.rs
+@@ -25,6 +25,12 @@ use std::time::Duration;
+ use egui_aros::{launch, startup};
+ use gridcraft_ui_egui::SheetApp;
+ 
++/// The workers that write files, and how many more saves may wait for one.
++const JOB_WORKERS: usize = 2;
++const JOB_QUEUE: usize = 4;
++/// How long the exit waits for a file that is still being written.
++const JOB_DRAIN: Duration = Duration::from_secs(120);
++
+ /// The release name packaging gives (`--version`, the log), else the crate version.
+ const RELEASE: &str = match option_env!("GRIDCRAFT_RELEASE") {
+     Some(r) => r,
+@@ -308,7 +314,7 @@ fn main() -> std::process::ExitCode {
+     std::process::ExitCode::from(code)
+ }
+ 
+-fn new_app(shared_window: services::SharedWindow, options: &Options) -> SheetApp {
++fn new_app(shared_window: services::SharedWindow, options: &Options, pool: Option<Rc<craft_jobs::Executor>>) -> SheetApp {
+     // RUST_LOG=debug: the start-up steps, to place a failure before the window opens.
+     log::debug!("start: session");
+     let mut session = gridcraft_engine::Session::new();
+@@ -318,7 +324,7 @@ fn new_app(shared_window: services::SharedWindow, options: &Options) -> SheetApp
+         log::warn!("sample {name}: {e}");
+     }
+     log::debug!("start: app");
+-    let mut app = SheetApp::new(session, services::aros(shared_window));
++    let mut app = SheetApp::new(session, services::aros(shared_window, pool.map(services::run_on)));
+     log::debug!("start: preferences");
+     // No `watch_desktop_theme`: AROS has no desktop theme to read, and its watcher thread polls
+     // for good, so the pthread library's exit handler, which joins every thread, would wait for
+@@ -445,8 +451,9 @@ impl egui_aros::App for Host {
+         }
+     }
+ 
++    // A save on its way is finished and recorded first (the app holds its own close back too).
+     fn quit_requested(&self) -> bool {
+-        self.done
++        self.done && self.app.saves_pending() == 0
+     }
+ 
+     fn frame_done(&mut self, report: &egui_aros::FrameReport, renderer: &egui_aros::raster::Renderer) {
+@@ -506,7 +513,17 @@ fn run(mut options: Options, choice: launch::RendererChoice) -> u8 {
+     let (w, h) = (w.max(1) as u32, h.max(1) as u32);
+     let ctx = egui::Context::default();
+     let shared_window: services::SharedWindow = Rc::new(RefCell::new(None));
+-    let app = new_app(shared_window.clone(), &options);
++    // Saves are written by a small pool of workers, which ask for a frame when one is done.
++    // Without it (the threads could not be started) everything runs in the window loop.
++    let wake = ctx.clone();
++    let pool = match craft_jobs::Executor::new(JOB_WORKERS, JOB_QUEUE, std::sync::Arc::new(move || wake.request_repaint())) {
++        Ok(pool) => Some(Rc::new(pool)),
++        Err(e) => {
++            log::warn!("{e}; files are written in the window loop");
++            None
++        }
++    };
++    let app = new_app(shared_window.clone(), &options, pool.clone());
+     log::debug!("start: fonts and language");
+     SheetApp::setup_context_for_language(&ctx, app.ui.dark, app.ui.language);
+     log::debug!("start: window");
+@@ -562,6 +579,17 @@ fn run(mut options: Options, choice: launch::RendererChoice) -> u8 {
+     }
+     drop(host);
+     log::info!("shutdown: application state dropped");
++    // The app is gone, so this is the last holder: jobs still accepted are finished (a file being
++    // written is completed), then the workers end. The window is closed, so waiting here is fine.
++    if let Some(pool) = pool.and_then(Rc::into_inner) {
++        let mut pool = pool;
++        pool.begin_shutdown();
++        let started = gridcraft_ui_egui::monotonic_ms();
++        while !pool.is_drained() && gridcraft_ui_egui::monotonic_ms() - started < JOB_DRAIN.as_secs_f64() * 1000.0 {
++            std::thread::sleep(Duration::from_millis(10));
++        }
++        log::info!("shutdown: workers {}", if pool.is_drained() { "ended".to_owned() } else { format!("still busy after {JOB_DRAIN:?}") });
++    }
+     // AROS's pthread library waits for every thread when the program exits: name the tasks still
+     // there, so a worker that does not end can be found in the log.
+     log_tasks("shutdown");
+diff --git a/apps/gridcraft-aros/src/services.rs b/apps/gridcraft-aros/src/services.rs
+index 5f662a76075c6d9c94f1c7a4e9b30cdab68ce7e1..48011d48ceb713cc0732dc745a0e98cc61cd817e 100644
+--- a/apps/gridcraft-aros/src/services.rs
++++ b/apps/gridcraft-aros/src/services.rs
+@@ -84,8 +84,34 @@ fn clipboard_picture() -> Option<image::RgbaImage> {
+     }
+ }
+ 
++/// The worker pool as the service the interface hands its saves to: a job the pool cannot take
++/// (its queue is full, or it is shutting down) is given back, and the interface runs it itself.
++pub fn run_on(pool: Rc<craft_jobs::Executor>) -> gridcraft_ui_egui::RunDetached {
++    Box::new(move |task| {
++        // `submit` keeps the closure it is given, so the task sits where it can be taken back.
++        let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(task)));
++        let for_worker = slot.clone();
++        let submitted = pool.submit(move || {
++            let task = for_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
++            if let Some(task) = task {
++                task();
++            }
++        });
++        match submitted {
++            Ok(_) => Ok(()),
++            Err(why) => {
++                log::warn!("a job runs in the window loop: {why}");
++                match slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
++                    Some(task) => Err(task),
++                    None => Ok(()),
++                }
++            }
++        }
++    })
++}
++
+ /// The services for this host.
+-pub fn aros(window: SharedWindow) -> Services {
++pub fn aros(window: SharedWindow, run_detached: Option<gridcraft_ui_egui::RunDetached>) -> Services {
+     let last_dir: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+     let (open_window, picture_window, save_window) = (window.clone(), window.clone(), window);
+     let (open_dir, picture_dir, save_dir) = (last_dir.clone(), last_dir.clone(), last_dir);
+@@ -112,6 +138,7 @@ pub fn aros(window: SharedWindow) -> Services {
+         paste_text: Some(Box::new(egui_aros::clipboard_text)),
+         paste_image: Some(Box::new(clipboard_picture)),
+         open_url: Some(Box::new(open_link)),
++        run_detached,
+         ..Default::default()
+     }
+ }

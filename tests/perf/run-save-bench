@@ -1,0 +1,24 @@
+.KEY RUNDIR/A
+.BRA [
+.KET ]
+; How long the window stalls when a large workbook is saved: two programs, the same workbook
+; (200,000 cells) and the same steps. Put GridCraft-rel, GridCraft-new, big.xlsx and
+; steps-save.json into RAM:t. Then: Execute RAM:t/run-save-bench <results directory>.
+; The per-frame lines (RUST_LOG=debug) show the stall as one long `logic` time.
+FailAt 21
+Protect RAM:t/GridCraft-rel +e
+Protect RAM:t/GridCraft-new +e
+SetEnv RUST_LOG debug
+SetEnv GRIDCRAFT_NO_PREFS 1
+SetEnv GRIDCRAFT_LOG [RUNDIR]/rel.log
+RAM:t/GridCraft-rel --gui-renderer CPU --window 780x540 --test-steps RAM:t/steps-save.json RAM:t/big.xlsx
+Echo $RC >[RUNDIR]/rel.rc
+List RAM:t/big-saved.xlsx >[RUNDIR]/rel-file.txt
+Delete RAM:t/big-saved.xlsx
+SetEnv GRIDCRAFT_LOG [RUNDIR]/new.log
+RAM:t/GridCraft-new --gui-renderer CPU --window 780x540 --test-steps RAM:t/steps-save.json RAM:t/big.xlsx
+Echo $RC >[RUNDIR]/new.rc
+List RAM:t/big-saved.xlsx >[RUNDIR]/new-file.txt
+RAM:t/gridcraft-cli cat RAM:t/big-saved.xlsx --range A1:B1 >[RUNDIR]/new-cat.txt
+Echo $RC >[RUNDIR]/new-cat.rc
+Echo "done" >[RUNDIR]/done.txt

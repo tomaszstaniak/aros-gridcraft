@@ -1,5 +1,6 @@
 id              = "gridcraft"
 version         = "0.19.1"
+revision        = 1
 summary         = "Spreadsheet for XLSX, ODS and CSV with formulas and PDF export"
 category        = "office/spreadsheet"
 license         = "MIT OR Apache-2.0"
@@ -50,8 +51,8 @@ id   = "datatypes.library"
 
 [source]
 repository = "https://github.com/tomaszstaniak/aros-gridcraft"
-revision   = "v0.19.1"
-archive    = "GridCraft-0.19.1-source.zip"
+revision   = "v0.19.1-r1"
+archive    = "GridCraft-0.19.1-r1-source.zip"
 built_with = "Raspberry Pi AArch64 ABIv1 (nightly 2026-11-10 SDK), Clang 20.1.0, Rust nightly 1.100 (rust-aros), egui 0.37 through egui-aros"
 
 [launch]
