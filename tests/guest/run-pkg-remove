@@ -1,0 +1,9 @@
+.KEY RUNDIR/A,MACHINE/A
+.BRA [
+.KET ]
+; After run-pkg (and any start from the Workbench): remove the package and list what is left.
+FailAt 21
+RAM:t/apkg --root RAM:pk --machine [MACHINE] --index RAM:t/idx.json remove gridcraft --yes >[RUNDIR]/remove.txt
+Echo $RC >[RUNDIR]/remove.rc
+List RAM:pk ALL >[RUNDIR]/after-remove.txt
+Echo "done" >[RUNDIR]/done.txt

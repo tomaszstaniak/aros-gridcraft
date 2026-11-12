@@ -1,0 +1,15 @@
+.KEY RUNDIR/A,MACHINE/A
+.BRA [
+.KET ]
+; Upgrade check, part 1: install the previous release with apkg from a local index (old.zip,
+; idx-old.json in RAM:t). Then start RAM:pk/GridCraft/GridCraft with a file, close it, and run
+; run-upgrade-2.
+FailAt 21
+Protect RAM:t/apkg +e
+MakeDir RAM:pk
+MakeDir RAM:pk/cache
+Copy RAM:t/old.zip RAM:pk/cache/gridcraft.zip
+RAM:t/apkg --root RAM:pk --machine [MACHINE] --index RAM:t/idx-old.json install gridcraft --yes >[RUNDIR]/old-install.txt
+Echo $RC >[RUNDIR]/old-install.rc
+Echo "user file kept across the upgrade" >RAM:pk/GridCraft/marker.txt
+Type [RUNDIR]/old-install.txt

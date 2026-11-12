@@ -1,0 +1,11 @@
+{
+  "comment": "The app this Craft port builds. scripts/craft.py runs the shared Craft tools pinned in scripts/tooling.json; they read only this file for app-specific names.",
+  "id": "gridcraft",
+  "name": "GridCraft",
+  "env_prefix": "GRIDCRAFT",
+  "packages": {
+    "gridcraft-aros": "GridCraft",
+    "gridcraft-cli": "gridcraft-cli"
+  },
+  "tools": {}
+}

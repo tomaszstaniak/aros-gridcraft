@@ -1,141 +1,172 @@
 ---
 type: guide
-updated: 2026-10-20
+updated: 2026-11-12
 ---
 
-# Development
+# Building GridCraft for AROS
 
-## Current capabilities
+The pinned source is GridCraft main at version 0.19.1 (a commit, not a release tag), with the
+patch series in `patches/gridcraft/`. It builds the editor (`GridCraft`) and the command line
+(`gridcraft-cli`, including the MCP server over stdio).
 
-A pinned GridCraft source plus an explicit patch series builds the editor
-(`GridCraft`) and the command line (`gridcraft-cli`, including the MCP server
-over stdio) for **x86_64 AROS ABIv11** with a private Rust std toolchain. Both
-have been run on an ABIv11 guest (older AROS One 1.3 installation); see "What
-has been run" below for the exact scope. Mainline ABIv1 is not built.
+Targets, named as `<system>-<arch>-<abi>-<platform>`:
 
-## Targets
+| Target | System |
+|---|---|
+| `aros-x86_64-abiv11-pc` | ABIv11 distributions (AROS One), x86_64 PC |
+| `aros-x86_64-abiv1-pc` | mainline AROS, x86_64 PC |
+| `aros-aarch64-abiv1-raspi` | native AROS on Raspberry Pi, AArch64 |
 
-| Architecture / ABI | Priority | Compile | Link | Runtime |
-|---|---|---|---|---|
-| x86_64 / ABIv11, older SDK (AROS One 1.3) | Primary | yes | yes | editor and CLI checks pass (see below) |
-| x86_64 / ABIv11, 2026.09 SDK | Primary, separate profile | not run | not run | not run |
-| x86_64 / mainline v1 | Secondary | not run | not run | not run |
+A binary built for one target does not run on another. Each target has its own toolchain,
+SDK, Cargo home (`deps/<target>/`) and build directory (`build/<target>/`). This document
+describes how to build; it does not record build or test results for any target.
 
-Mainline v1 needs mainline's own Rust cross compiler (`configure --enable-rust`
-in the AROS tree: rustc 1.98.1, `panic = abort`, `mmap` and sockets as ENOSYS
-stubs) and its crate store; the ABIv11 profile below does not build for it. The
-port's own changes are written for `target_os = "aros"` without ABIv11-only
-assumptions, and the egui window layer (egui-aros) is built on mainline's
-`aros-gui-sys`, but nothing has been compiled for v1 yet.
+The build, packaging and update tools are shared by the Craft ports and live in egui-aros under
+`tools/craft`. `scripts/craft.py` runs the snapshot of them that `scripts/tooling.json` pins (a
+commit and the content hash of that directory), prepared in the ignored `build/tooling/`; it
+takes the commit from the egui-aros checkout named in the local file, or from the URL in
+`tooling.json` when there is none. The app's names are in `scripts/port.json` (environment
+prefix `GRIDCRAFT`; packages `gridcraft-aros` for `GridCraft` and `gridcraft-cli`). The tools'
+README describes the pin, how to change it, and `update-check`, which tries the patch series on a
+newer upstream commit without changing this repository.
 
-## Requirements
+## What you need
 
-- An x86_64 ABIv11 GCC 10.5 cross toolchain and the matching SDK. The C glue,
-  the patched pthread objects and the Rust link must all use the same SDK:
-  ABIv1 and ABIv11 pass `SysBase` differently, and a mismatch crashes inside the
-  first system call instead of failing to build.
-- A private Rust std toolchain for AROS registered with rustup, reporting
-  exactly `rustc 1.100.0-nightly (0dfb098f3 2026-08-31)`, built with the
-  rust-aros std patch tooling.
-- A rust-aros checkout (target template `x86_64-aros.json.in` and
-  `std-groundwork/libc-aros`, at the commit named in `scripts/gcconfig.py`).
-- A deadwood2/AROS checkout containing the commit named in
-  `scripts/gcconfig.py` (its `compiler/pthread` source is read, never changed).
-- An egui-aros checkout containing the commit pinned in `upstreams.json`.
-- Python 3.11+, Git, `patch`, and network access once for `cargo fetch`.
+- Python 3.11 or later, Git, rustup.
+- Rust nightly `nightly-2026-09-01` (it reports `rustc 1.100.0-nightly (0dfb098f3 2026-08-31)`)
+  with `rust-src`, and one private toolchain alias per target whose sysroot holds the AROS
+  standard library source for that target, made with the rust-aros std patch tooling.
+- Per target, an AROS C toolchain and the SDK it was made for. The C glue, the pthread objects
+  and the Rust link must all use the same SDK: ABIv1 and ABIv11 pass `SysBase` differently, and
+  a mismatch crashes inside the first system call instead of failing to build.
+  - ABIv11: x86_64 AROS GCC 10.5 and the ABIv11 SDK, plus a deadwood2/AROS checkout that
+    contains commit `5376f09bc1ed0c36a12fbb096406013f8a046e89` (its `compiler/pthread` is
+    rebuilt with `patches/aros-pthread`).
+  - mainline ABIv1: x86_64 AROS GCC 10.5 and the mainline Developer SDK.
+  - Raspberry Pi: the AROS-patched Clang 20.1 for `aarch64-unknown-aros` with compiler-rt, the
+    Raspberry Pi Developer SDK (its `libpthread.a` is used unchanged: `"pthread": "sdk"` in the
+    local file), and a pomaros-hosted checkout at
+    `3bc9359d439f9fb5655cf48924413ffe670931cc` (the C bridge of the AArch64 standard
+    library). The shared tools build that bridge with their own `aros-glue` patch.
+- The rust-aros files the build uses (target template, profiles, `libc-aros`, the std
+  patches) at the commit in the local file (`rust_aros_commit`): a checkout of
+  [rust-aros](https://github.com/tomaszstaniak/rust-aros).
+- An egui-aros checkout containing the commit pinned in `upstreams.json` (branch `egui-0.37`),
+  with its upstream sources prepared by its own `python3 scripts/ea.py fetch`.
 
 ## Configuration
 
-`scripts/gcconfig.py` is the one place for paths. Each setting comes from an
-environment variable, else the ignored `local.json` (copy
-`local.example.json`), else a default. `python3 scripts/gc.py config` shows
-where each value comes from; a missing value is reported with the variable that
-sets it.
+Copy `local.example.json` (an ABIv11 example) to one ignored local file per target and fill in
+the paths: `local.json` (ABIv11, the default), for example `local.v1.json` and
+`local.raspi.json` for the others, each with its `"target"`. Select a file with
+`GRIDCRAFT_LOCAL`:
 
-## Build
-
-```sh
-python3 scripts/gc.py fetch          # clone/verify upstream/gridcraft at its pin
-python3 scripts/gc.py materialize    # work/gridcraft = pin + patches/gridcraft/series; never overwrites
-CARGO_HOME=$PWD/deps/v11/cargo-home cargo fetch --manifest-path work/gridcraft/Cargo.toml   # once, online
-python3 scripts/gc.py build --online # once, for the std sources' own dependencies
-python3 scripts/gc.py build          # GridCraft and gridcraft-cli
-python3 scripts/gc.py build -p gridcraft-cli
-python3 scripts/gc.py host test -p gridcraft-aros   # host cargo with egui-aros patched in
+```
+GRIDCRAFT_LOCAL=local.v1.json python3 scripts/craft.py config
 ```
 
-Each build writes `build/v11/out/<time>-<id>/` with the binaries and
-`manifest.json`: work-copy commit and dirtiness, upstream pins, crate and
-libc-aros patch digests, the pthread objects, the egui-aros vendor record,
-toolchain identity, the cargo command, binary SHA-256 and a
-check that no symbol is left undefined. Builds use the committed work-copy tree
-unless `--worktree` is given (recorded as such). Ambient `RUSTFLAGS`,
-`CARGO_TARGET_DIR` and similar overrides are refused.
+`craft.py config` shows where every setting comes from; environment variables `GRIDCRAFT_*`
+override the file. Missing paths are reported, never guessed.
 
-What the build adds around the pinned source:
+For the Raspberry Pi target, `aros_gcc` is the `aarch64-aros-clang` driver (with `aros_ar` and
+`aros_strip` beside it), `pomaros_hosted` the pomaros-hosted checkout and `pthread` is `sdk`.
+The mainline x86_64 target needs no `aros_src`.
 
-- egui-aros at its pinned commit, prepared by its own `scripts/ea.py vendor`:
-  the window, input, CPU renderer and ASL layer, and its crate patches (winit,
-  egui-winit, eframe, glutin, raw-window-handle, aros-gui-sys) as `[patch]`
-  entries.
-- `patches/crates/`: rayon-core 1.13.0 (`terminate_global_thread_pool`) and
-  parking_lot_core 0.9.12 (realtime condvar deadlines on AROS).
-- `patches/libc-aros/`: a `memchr` declaration for rust-aros libc-aros.
-- `patches/aros-pthread/`: the pthread link library's detach fix. The unpatched
-  `compiler/pthread` is first rebuilt and compared with the SDK's
-  `libpthread.a`, object for object; then the two patched objects go first on
-  the link line.
-- The unwind panic profile (`-Cpanic=unwind -Cforce-unwind-tables=yes`) by
-  default; `GRIDCRAFT_PANIC=abort` selects abort.
+## Steps
 
-Never strip the binaries fully; `x86_64-aros-strip --strip-debug` is safe.
+1. Fetch the pinned upstreams and create the work copy:
+
+   ```
+   python3 scripts/craft.py fetch
+   python3 scripts/craft.py materialize
+   python3 scripts/craft.py verify
+   ```
+
+2. Fetch the locked dependencies into the target's private Cargo home (once per target):
+
+   ```
+   GRIDCRAFT_LOCAL=<file> python3 scripts/craft.py deps
+   ```
+
+3. Build both programs for a target:
+
+   ```
+   python3 scripts/craft.py build
+   GRIDCRAFT_LOCAL=local.v1.json python3 scripts/craft.py build
+   GRIDCRAFT_LOCAL=local.raspi.json python3 scripts/craft.py build
+   ```
+
+   Add `--online` if Cargo still has to download crates. Each build goes to a new
+   `build/<target>/out/<date>-<id>/` with the unstripped binaries, `build.log`,
+   `cargo-messages.jsonl` and `manifest.json`. The manifest records the work copy commit, the
+   patch series, compiler and SDK hashes, the command, every linked package and the binary
+   hashes, and checks that no symbol is left undefined. `--worktree` builds uncommitted files
+   too and is recorded as such; such builds cannot be packaged. A build is not a runtime test.
+
+   The build passes `release` from `packaging/release.json` to the programs as
+   `GRIDCRAFT_RELEASE`; `--version` and the log banner print it. Ambient `RUSTFLAGS`,
+   `CARGO_TARGET_DIR` and similar overrides are refused. `GRIDCRAFT_PANIC` selects the panic
+   strategy instead of the target's default.
+
+   What the build adds around the pinned source: `patches/crates/` (the shared set named in
+   `crates.json`, checked against the Cargo.lock checksums and the recorded patched-tree
+   hashes), the shared tools' `libc-aros` and `aros-glue` patches, `patches/aros-pthread/` (ABIv11 only) and the panic profile
+   of the target. The window, input and renderer layer comes from egui-aros, prepared by its
+   own `ea.py vendor`.
+
+4. Package a build. `scripts/package.py` forwards to `craft.py package`:
+
+   ```
+   export APKG_PACK=/path/to/arospkg/tools/apkg-pack
+   python3 scripts/package.py binary build/<target>/out/<id>
+   python3 scripts/package.py source build/<target>/out/<id> [build/<target>/out/<id> ...]
+   ```
+
+   The tools write `dist/GridCraft-<release>[-rN]-<target>.zip` and
+   `dist/GridCraft-<release>[-rN]-source.zip` and add them to `dist/SHA256SUMS`. They refuse
+   a dirty repository, a build from a dirty work copy, binaries that differ from the manifest
+   and undefined symbols. A binary archive also needs a catalogue description per target in
+   `packaging/catalogue/`, whose `requires_system` must match the C runtime libraries the
+   programs open at start; this repository does not have those descriptions yet. The programs
+   are stripped with `strip --strip-unneeded --remove-section .comment` only: a full strip
+   removes relocations AROS applies when it loads a program. The program icon is generated from
+   GridCraft's 64x64 application icon with the stack and ToolTypes from `release.json`
+   (stack 16 MiB, `GUI_RENDERER=CPU`).
+
+5. Check an archive on the host: unpack it into a new directory, compare the programs with the
+   hashes recorded in the package and run the target's `nm -u` on them (it must print
+   nothing). Then test the unpacked package on the target system itself.
 
 ## The spreadsheet on AROS
 
-`apps/gridcraft-aros` replaces the desktop app's eframe/wgpu window with
-egui-aros: an Intuition window on the default public screen, drawn in software.
-Open, Save As and Insert Picture use ASL requesters with the desktop app's
-filters and save types; the chosen path is absolute. Copy writes plain text to
-the system clipboard and Paste reads it. Links open with `OpenURL`, limited to
-http, https and mailto as on the desktop. Settings live in
-`PROGDIR:GridCraftData` (or `GRIDCRAFT_CONFIG_DIR`). The desktop theme watcher
-is not started (AROS has no desktop theme, and its polling thread would keep
-the pthread library's exit handler waiting). The loop sleeps until input, a
-repaint the app asks for, or a wake-up from another thread; there is no idle
-poll.
+`apps/gridcraft-aros` replaces the desktop app's eframe/wgpu window with egui-aros: an
+Intuition window on the default public screen. The renderer is chosen at run time with
+`--gui-renderer CPU|AUTO|GPU` or the `GUI_RENDERER` ToolType. The program runs in the -nix
+path mode: requesters speak DOS names and the program converts them. Open, Save As and Insert
+Picture use ASL requesters with the desktop app's filters and save types. The system clipboard
+carries text and pictures. Settings and `GridCraft.log` live in `GridCraftData` in the
+program's drawer (or `GRIDCRAFT_CONFIG_DIR`). A start-up entry
+raises the program's stack to 16 MiB. `gridcraft-cli` runs its command on a thread with its
+own stack.
 
-Not available, and reported as such: printing (no printers are offered), HTML
-on the clipboard (plain text is used), file drops, the control server
-(`--control` is refused). As in GridCraft 0.8.0 on other systems, closing the
-window does not ask about unsaved changes; File › Close does.
+Not available on AROS, and reported as such: printing, HTML on the clipboard, the localhost
+control server (`--control` is refused), the self-updater and a native window per workbook
+window.
 
-The spreadsheet needs a large stack: from a Shell, `Stack 4000000` first.
-`gridcraft-cli` runs its command on a thread with an 8 MiB stack.
+`GridCraft --screenshot FILE.png [--screenshot-frames N]` writes the window's pixels after N
+frames (20 by default) and quits. `--window WxH` sets the inner size. `--test-steps FILE.json`
+drives the window through a scripted sequence. `GRIDCRAFT_LOG=file` names the log file;
+`RUST_LOG=debug` raises the level. `GRIDCRAFT_TRACE_INPUT=1` logs every frame's key
+and text events and the focused widget.
 
-`GridCraft --screenshot FILE.png [--screenshot-frames N]` writes the window's
-pixels after N frames and quits. `GRIDCRAFT_LOG=file` appends the log to a file;
-`RUST_LOG=info` or `debug` raises the level (`debug` logs every frame).
-`GRIDCRAFT_TRACE_INPUT=1` logs every frame's key and text events and the focused
-widget.
+## Guest scripts
 
-## What has been run
+`tests/guest/` holds AmigaDOS scripts for one run on an ABIv11 guest, with their own README:
+`run-cli` (version, information, conversions, a scripted edit saved twice, the MCP handshake
+over stdio) and `run-shot` (three unattended starts with `--screenshot` in a row).
+`tests/fixtures/hello.xlsx` is their input.
 
-On 2026-10-20, ABIv11 guest with the older AROS One 1.3 installation, QEMU TCG,
-1024x768 Workbench screen. Guest scripts are in `tests/guest/`.
+## Host checks
 
-- CLI: `version`, `info`, `cat` (values and formulas), `eval`, `convert` to CSV,
-  `run` with a cell edit saved to XLSX, a second `run` adding a formula and
-  saving over the same file (recalculated: `=C2*2` gave 50), `check` (3 of 3
-  formulas matched, round trip equal), MCP `initialize` and `tools/list` over
-  stdio. Every command returned 0.
-- Spreadsheet: opening an XLSX (path with a space) with computed formulas,
-  typing a formula into a cell and into the formula bar (`=C2*10` gave 75),
-  Ctrl+S over the opened file and reopening it, copying a cell and pasting it in
-  a Shell (`7.5`), resizing, three unattended starts in a row with identical
-  screenshots, exit code 0 each time, and the desktop usable after closing.
-- Idle: with the window untouched, QEMU used 0.37 CPU-seconds per 30 seconds
-  (the bare desktop 0.73).
-
-Not run: charts, pivot tables, encrypted workbooks, XLS/XLSB/ODS import, PDF
-export from the window, large workbooks, the 2026.09 ABIv11 base, real
-hardware, mainline v1.
+`python3 scripts/craft.py host test -p gridcraft-aros` runs the AROS program's host tests with
+the pinned egui-aros.

@@ -1,0 +1,63 @@
+.KEY RUNDIR/A
+.BRA [
+.KET ]
+; GridCraft smoke run: CLI, three GUI starts, a scripted edit saved and read back.
+; Unpack the payload to RAM:gc, then: Execute RAM:gc/run-smoke <results directory>
+FailAt 21
+Protect RAM:gc/gridcraft-cli +e
+Protect RAM:gc/GridCraft +e
+SetEnv RUST_LOG info
+SetEnv GRIDCRAFT_CONFIG_DIR RAM:gc/data
+Echo "start" >[RUNDIR]/start.txt
+RAM:gc/gridcraft-cli version >[RUNDIR]/cli-version.txt
+Echo $RC >[RUNDIR]/cli-version.rc
+RAM:gc/gridcraft-cli info RAM:gc/hello.xlsx >[RUNDIR]/cli-info.txt
+Echo $RC >[RUNDIR]/cli-info.rc
+RAM:gc/gridcraft-cli cat RAM:gc/hello.xlsx --formulas >[RUNDIR]/cli-catf.txt
+Echo $RC >[RUNDIR]/cli-catf.rc
+RAM:gc/gridcraft-cli eval "=SUM(1,2)**3" >[RUNDIR]/cli-eval.txt
+Echo $RC >[RUNDIR]/cli-eval.rc
+RAM:gc/gridcraft-cli convert RAM:gc/hello.xlsx RAM:gc/out.csv >[RUNDIR]/cli-csv.txt
+Echo $RC >[RUNDIR]/cli-csv.rc
+RAM:gc/gridcraft-cli run --in RAM:gc/hello.xlsx --cmd "cell.set={*"cell*":*"A2*",*"input*":*"10*"}" --out RAM:gc/edited.xlsx --quiet >[RUNDIR]/cli-run.txt
+Echo $RC >[RUNDIR]/cli-run.rc
+; Save over the file just written: an existing destination must be replaced.
+RAM:gc/gridcraft-cli run --in RAM:gc/edited.xlsx --cmd "cell.set={*"cell*":*"D2*",*"input*":*"=C2**2*"}" --out RAM:gc/edited.xlsx --quiet >[RUNDIR]/cli-run2.txt
+Echo $RC >[RUNDIR]/cli-run2.rc
+RAM:gc/gridcraft-cli cat RAM:gc/edited.xlsx >[RUNDIR]/cli-cat2.txt
+Echo $RC >[RUNDIR]/cli-cat2.rc
+RAM:gc/gridcraft-cli check RAM:gc/edited.xlsx >[RUNDIR]/cli-check.txt
+Echo $RC >[RUNDIR]/cli-check.rc
+RAM:gc/gridcraft-cli mcp <RAM:gc/mcp-in.txt >[RUNDIR]/cli-mcp.txt
+Echo $RC >[RUNDIR]/cli-mcp.rc
+Echo "cli done" >[RUNDIR]/cli-done.txt
+; GUI: version, then a start with a file, a start without, and the scripted edit.
+RAM:gc/GridCraft --version >[RUNDIR]/gui-version.txt
+Echo $RC >[RUNDIR]/gui-version.rc
+Avail FLUSH >[RUNDIR]/avail0.txt
+SetEnv GRIDCRAFT_LOG RAM:gc/log-1.txt
+RAM:gc/GridCraft --window 780x540 --screenshot RAM:gc/shot1.png --screenshot-frames 8 RAM:gc/hello.xlsx
+Echo $RC >[RUNDIR]/shot1.rc
+Avail FLUSH >[RUNDIR]/avail1.txt
+SetEnv GRIDCRAFT_LOG RAM:gc/log-2.txt
+RAM:gc/GridCraft --window 780x540 --sample --screenshot RAM:gc/shot2.png --screenshot-frames 8
+Echo $RC >[RUNDIR]/shot2.rc
+Avail FLUSH >[RUNDIR]/avail2.txt
+SetEnv GRIDCRAFT_LOG RAM:gc/log-3.txt
+RAM:gc/GridCraft --window 780x540 --test-steps RAM:gc/steps.json RAM:gc/hello.xlsx
+Echo $RC >[RUNDIR]/steps.rc
+Avail FLUSH >[RUNDIR]/avail3.txt
+RAM:gc/gridcraft-cli cat RAM:gc/gui-saved.xlsx --formulas >[RUNDIR]/gui-saved-cat.txt
+Echo $RC >[RUNDIR]/gui-saved-cat.rc
+List RAM:gc ALL >[RUNDIR]/list.txt
+Copy RAM:gc/shot1.png [RUNDIR]/shot1.png
+Copy RAM:gc/shot2.png [RUNDIR]/shot2.png
+Copy RAM:gc/steps-a.png [RUNDIR]/steps-a.png
+Copy RAM:gc/steps-b.png [RUNDIR]/steps-b.png
+Copy RAM:gc/log-1.txt [RUNDIR]/log-1.txt
+Copy RAM:gc/log-2.txt [RUNDIR]/log-2.txt
+Copy RAM:gc/log-3.txt [RUNDIR]/log-3.txt
+Copy RAM:gc/gui-saved.xlsx [RUNDIR]/gui-saved.xlsx
+Copy RAM:gc/edited.xlsx [RUNDIR]/edited.xlsx
+Copy RAM:gc/out.csv [RUNDIR]/out.csv
+Echo "done" >[RUNDIR]/done.txt

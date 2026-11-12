@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 10:42:40 +0100
+Subject: [PATCH] engine: close the temporary file before it replaces the
+ workbook
+
+write_file renamed the temporary file over the destination while still holding it open. On AROS the C library's rename replaces an existing destination only when it can lock the source exclusively, so every save over an existing file failed with "File exists (os error 17)" and left the old file in place (seen with File > Save in the app and with gridcraft-cli run --out on an existing file). The file is closed first; nothing else changes, and the temporary file is still removed when the rename fails.
+---
+ crates/engine/src/io.rs | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/crates/engine/src/io.rs b/crates/engine/src/io.rs
+index 6dd96b0424bc80e2c7164b5138fd31ff6b233847..3139345c614707ccac281e00a05562048082af26 100644
+--- a/crates/engine/src/io.rs
++++ b/crates/engine/src/io.rs
+@@ -1089,6 +1089,10 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
+         let _ = std::fs::remove_file(&tmp);
+         EngineError::Other(format!("{path}: {e}"))
+     })?;
++    // Closed before the replacement: a system that renames by name and needs the source to
++    // itself (AROS's C library replaces the destination only when it can lock the source
++    // exclusively) otherwise refuses to replace an existing workbook with "File exists".
++    drop(f);
+     std::fs::rename(&tmp, path).map_err(|e| {
+         // A write or rename that fails (full disk, the workbook locked by another app) leaves
+         // no temporary file beside the user's workbook.

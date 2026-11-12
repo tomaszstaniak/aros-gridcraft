@@ -1,0 +1,93 @@
+{
+  "name": "GridCraft",
+  "version": "0.19.1",
+  "release": "0.19.1",
+  "upstream_version": "0.19.1 (main 37941f06, 2026-11-12)",
+  "drawer": "GridCraft",
+  "stack": 16777216,
+  "tooltypes": [
+    "GUI_RENDERER=CPU"
+  ],
+  "icon_source": "work:assets/app-icon/hicolor/64x64/apps/ai.storyteller.gridcraft.png",
+  "source_archive": "GridCraft-0.19.1-source.zip",
+  "source_archive_exclude": [
+    "AGENTS.md",
+    "CLAUDE.md"
+  ],
+  "notices": [
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "NOTICE",
+    "ATTRIBUTION.md",
+    "assets/app-icon/LICENSE.txt"
+  ],
+  "targets": {
+    "aros-x86_64-abiv11-pc": {
+      "system": "AROS x86_64, ABIv11 (AROS One 1.3)",
+      "sdk": "x86_64 ABIv11 SDK (deadwood2/AROS)",
+      "notice": "notices/aros-x86_64-abiv11-pc.txt",
+      "build": {
+        "lto": null,
+        "panic": "unwind",
+        "features": []
+      },
+      "limitations": [
+        "- OpenGL: AROS One 1.3 has only Mesa's software renderer, so AUTO uses",
+        "  CPU. GPU has not been tested in this release.",
+        "- Tested from a Shell with scripted edits; typing, the file requester and",
+        "  the clipboard were tested on mainline AROS only."
+      ]
+    },
+    "aros-x86_64-abiv1-pc": {
+      "system": "AROS x86_64, mainline ABIv1 (nightly 2026-11-10)",
+      "sdk": "x86_64 mainline ABIv1 SDK of nightly 2026-11-10",
+      "notice": "notices/aros-x86_64-abiv1-pc.txt",
+      "build": {
+        "lto": null,
+        "panic": "abort",
+        "features": []
+      },
+      "limitations": [
+        "- OpenGL: with Mesa's software renderer AUTO uses CPU. GPU and hardware",
+        "  OpenGL drivers have not been tested in this release."
+      ]
+    },
+    "aros-aarch64-abiv1-raspi": {
+      "system": "AROS on Raspberry Pi, AArch64 ABIv1 (mainline nightly 2026-11-10)",
+      "sdk": "Raspberry Pi AArch64 ABIv1 SDK of nightly 2026-11-10",
+      "notice": "notices/aros-aarch64-abiv1-raspi.txt",
+      "build": {
+        "lto": null,
+        "panic": "abort",
+        "features": []
+      },
+      "limitations": [
+        "- Tested in an emulator only, not on a physical Raspberry Pi, and from a",
+        "  Shell with scripted edits; typing, the file requester and the clipboard",
+        "  were tested on mainline x86_64 AROS only.",
+        "- OpenGL has not been tested on Pi hardware, so AUTO uses CPU. GPU has not",
+        "  been tested in this release. Save your work before you try it."
+      ]
+    }
+  },
+  "limitations": [
+    "- Every change redraws the whole window. On slow machines and in emulators",
+    "  the interface follows with a delay.",
+    "- No printing: export to PDF instead. Files dropped on the window are not",
+    "  opened.",
+    "- All workbooks share one window; there is no separate window per workbook.",
+    "- Formatted (HTML) clipboard content is not available; copy and paste use",
+    "  plain text and pictures.",
+    "- The control server (--control) and gridcraft-cli send, which drive a",
+    "  running window, are not available.",
+    "- No automatic updates: install new versions with the AROS package manager",
+    "  or by unpacking the new archive.",
+    "- Pasting a picture from the clipboard, importing XLS, XLSB and ODS files,",
+    "  charts and PDF export have not been tested on AROS in this release.",
+    "- Keyboard layouts other than the US one have not been tested. Chinese,",
+    "  Japanese, Korean and emoji characters are kept in workbooks but may be",
+    "  shown as boxes: no such font is built in or installed with AROS.",
+    "- The MCP server (gridcraft-cli mcp) has been tested only for its",
+    "  handshake on AROS."
+  ]
+}

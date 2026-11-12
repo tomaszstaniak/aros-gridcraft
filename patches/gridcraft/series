@@ -1,10 +1,6 @@
-0001-Lock-libc-0.2.189-for-the-AROS-libc-replacement.patch
+0001-AROS-build-without-the-self-updater.patch
 0002-gridcraft-cli-own-stack-on-AROS.patch
-0003-Add-gridcraft-aros-the-spreadsheet-in-an-Intuition-w.patch
-0004-gridcraft-aros-sleep-until-there-is-something-to-do-.patch
-0005-gridcraft-aros-screenshot-draws-frames-until-the-pic.patch
-0006-gridcraft-aros-keep-the-main-task-s-startup-director.patch
-0007-gridcraft-aros-name-the-startup-directory-in-full-wh.patch
-0008-gridcraft-aros-keep-the-startup-directory-with-an-em.patch
-0009-ui-egui-keys-typed-faster-than-the-frames-come-keep-.patch
-0010-gridcraft-aros-make-document-names-from-the-command-.patch
+0003-AROS-host-GridCraft-in-an-Intuition-window-through-e.patch
+0004-ui-egui-keys-typed-faster-than-the-frames-come-keep-.patch
+0005-engine-close-the-temporary-file-before-it-replaces-t.patch
+0006-AROS-no-fontconfig-query-at-start-up.patch

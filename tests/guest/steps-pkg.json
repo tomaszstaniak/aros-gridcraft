@@ -1,0 +1,8 @@
+[
+  {"frame": 6, "run": "cell.set", "params": {"cell": "A5", "input": "41"}},
+  {"frame": 8, "run": "cell.set", "params": {"cell": "B5", "input": "=A5+1"}},
+  {"frame": 10, "run": "file.save", "params": {"path": "/RAM/t/pkg-saved.xlsx"}},
+  {"frame": 12, "run": "cell.set", "params": {"cell": "C5", "input": "=B5*2"}},
+  {"frame": 14, "run": "file.save", "params": {}},
+  {"frame": 18, "quit": true}
+]

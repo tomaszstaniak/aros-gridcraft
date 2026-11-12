@@ -1,6 +1,6 @@
 ---
 type: guide
-updated: 2026-10-20
+updated: 2026-11-12
 ---
 
 # Source and patch workflow
@@ -8,9 +8,9 @@ updated: 2026-10-20
 ## Registered source
 
 `upstreams.json` maps `gridcraft` (the build source) to its URL and full commit. `patches/gridcraft/series`
-lists the patches in order. The example manifest is illustrative only.
+lists the patches in order (currently four, on the 0.19.1 base). The example manifest is illustrative only.
 
-`scripts/gc.py` implements the procedure below: `fetch` (clone, or verify origin,
+`scripts/craft.py` implements the procedure below: `fetch` (clone, or verify origin,
 pin and clean state), `materialize` (new work copy only), `export` (work-copy
 commits since the pin to numbered patches and `series`; refuses uncommitted
 changes) and `verify` (rebuild the series in a new temporary directory whose path
@@ -32,8 +32,6 @@ copy's committed tree).
    stashes and reflogs. A clean status or stored digest does not preserve history
    or establish source equivalence. Refuse destructive recreation unless both are
    verified independently and recovery is retained outside the replaced copy.
-
-Checked on 2026-10-20: `verify` reproduces the work copy's tree.
 
 ## Saving changes
 
@@ -59,6 +57,6 @@ Validate the complete series in a separate temporary reconstruction without chan
 active copies. Compare contents, binary bytes and executable modes with the expected
 saved tree. Test stale inputs, unsaved changes, stashes/branches/reflogs, amended
 commits, successive patches and binary changes before relying on new tooling.
-Preserve the previous series in Git history before updating the base. Retire accepted
+Preserve the previous series before updating the base: `patches/gridcraft-v0.8/` is the series for 0.8.0, kept for history and not applied. Retire accepted
 patches only when the new pinned source contains them; retain their provenance in
-history. A source reconstruction check proves neither a build nor runtime behavior.
+history. `python3 scripts/craft.py update-check --upstream-commit <full commit> --output report.json` tries the series on a newer upstream commit without changing this repository. A source reconstruction check proves neither a build nor runtime behavior.

@@ -1,0 +1,23 @@
+.KEY RUNDIR/A,MACHINE/A
+.BRA [
+.KET ]
+; Upgrade check, part 2: upgrade to the new package (gc.zip, idx.json), verify, look at the
+; settings kept from the previous release, use the new program, remove.
+FailAt 21
+Copy RAM:pk/GridCraft/GridCraftData/ui.json [RUNDIR]/ui-before.json
+List RAM:pk/GridCraft ALL >[RUNDIR]/before-upgrade.txt
+Copy RAM:t/gc.zip RAM:pk/cache/gridcraft.new.zip
+RAM:t/apkg --root RAM:pk --machine [MACHINE] --index RAM:t/idx.json outdated >[RUNDIR]/outdated.txt
+RAM:t/apkg --root RAM:pk --machine [MACHINE] --index RAM:t/idx.json upgrade gridcraft --yes >[RUNDIR]/upgrade.txt
+Echo $RC >[RUNDIR]/upgrade.rc
+RAM:t/apkg --root RAM:pk --machine [MACHINE] --index RAM:t/idx.json verify gridcraft >[RUNDIR]/verify.txt
+Echo $RC >[RUNDIR]/verify.rc
+List RAM:pk/GridCraft ALL >[RUNDIR]/after-upgrade.txt
+Type RAM:pk/GridCraft/marker.txt >[RUNDIR]/marker.txt
+RAM:pk/GridCraft/gridcraft-cli version >[RUNDIR]/cli-version.txt
+SetEnv RUST_LOG info
+RAM:pk/GridCraft/GridCraft --window 780x540 --test-steps RAM:t/steps-pkg.json RAM:t/hello.xlsx
+Echo $RC >[RUNDIR]/gui.rc
+RAM:pk/GridCraft/gridcraft-cli cat RAM:t/pkg-saved.xlsx --formulas >[RUNDIR]/saved-cat.txt
+Copy RAM:pk/GridCraft/GridCraftData/GridCraft.log [RUNDIR]/GridCraft.log
+Type [RUNDIR]/upgrade.txt

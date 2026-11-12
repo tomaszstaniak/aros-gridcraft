@@ -1,0 +1,11 @@
+[
+  {"frame": 6, "run": "cell.set", "params": {"cell": "A5", "input": "41"}},
+  {"frame": 8, "run": "cell.set", "params": {"cell": "B5", "input": "=A5+1"}},
+  {"frame": 10, "screenshot": "/RAM/gc/steps-a.png"},
+  {"frame": 12, "run": "file.save", "params": {"path": "/RAM/gc/gui-saved.xlsx"}},
+  {"frame": 14, "run": "edit.undo", "params": {}},
+  {"frame": 16, "run": "edit.redo", "params": {}},
+  {"frame": 18, "run": "file.save", "params": {}},
+  {"frame": 20, "screenshot": "/RAM/gc/steps-b.png"},
+  {"frame": 24, "quit": true}
+]

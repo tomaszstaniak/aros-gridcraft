@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 11:18:11 +0100
+Subject: [PATCH] AROS: no fontconfig query at start-up
+
+On Unix systems other than macOS the font set-up runs fc-match once to learn the preferred Arabic face. AROS counts as Unix for the build and has no fontconfig, so the query can only fail there, and it costs a child process before the window opens: on mainline ABIv1 (nightly 20261110) that start of a program that does not exist ended in an illegal address access at address 0 in the main task, so the app never opened. The query is left out on target_os = "aros"; the system Arabic candidates are still tried.
+---
+ crates/ui-egui/src/theme/font_fallback.rs | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/crates/ui-egui/src/theme/font_fallback.rs b/crates/ui-egui/src/theme/font_fallback.rs
+index 7d99a7e88b11a4f1227583565b96951027f40e75..c8759764aa70b00162bf32fa71c7b9e4fd4a4549 100644
+--- a/crates/ui-egui/src/theme/font_fallback.rs
++++ b/crates/ui-egui/src/theme/font_fallback.rs
+@@ -73,7 +73,8 @@ pub(super) const PREFERRED_ARABIC: &str = "sys-arabic-preferred";
+ 
+ /// The face fontconfig prefers for Arabic, such as a Vazirmatn the user set as their Arabic font
+ /// (#229), kept only when it has Arabic letters. Asked once per process.
+-#[cfg(all(unix, not(target_os = "macos")))]
++/// Not on AROS: it has no fontconfig, and the question is a child process at start-up.
++#[cfg(all(unix, not(any(target_os = "macos", target_os = "aros"))))]
+ pub(super) fn fontconfig_arabic() -> Option<(String, u32)> {
+     static PREFERRED: std::sync::OnceLock<Option<(String, u32)>> = std::sync::OnceLock::new();
+     PREFERRED
+@@ -86,14 +87,14 @@ pub(super) fn fontconfig_arabic() -> Option<(String, u32)> {
+         .clone()
+ }
+ 
+-#[cfg(all(not(target_arch = "wasm32"), not(all(unix, not(target_os = "macos")))))]
++#[cfg(all(not(target_arch = "wasm32"), not(all(unix, not(any(target_os = "macos", target_os = "aros"))))))]
+ pub(super) fn fontconfig_arabic() -> Option<(String, u32)> {
+     None
+ }
+ 
+ /// The file and face index from `fc-match --format='%{file}\n%{index}\n'`. fontconfig packs a
+ /// variable font's named instance into the upper 16 bits of the index; only the face index is kept.
+-#[cfg(all(unix, not(target_os = "macos")))]
++#[cfg(all(unix, not(any(target_os = "macos", target_os = "aros"))))]
+ pub(super) fn parse_fc_match(out: &str) -> Option<(String, u32)> {
+     let mut lines = out.lines().map(str::trim);
+     let file = lines.next().filter(|file| !file.is_empty())?;
+@@ -101,7 +102,7 @@ pub(super) fn parse_fc_match(out: &str) -> Option<(String, u32)> {
+     Some((file.to_owned(), index))
+ }
+ 
+-#[cfg(all(unix, not(target_os = "macos")))]
++#[cfg(all(unix, not(any(target_os = "macos", target_os = "aros"))))]
+ pub(super) fn covers_arabic(bytes: &[u8], index: u32) -> bool {
+     use skrifa::MetadataProvider;
+     skrifa::FontRef::from_index(bytes, index).is_ok_and(|font| "العربية".chars().all(|ch| font.charmap().map(ch).is_some()))
