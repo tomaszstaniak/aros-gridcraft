@@ -2,19 +2,20 @@
   "name": "GridCraft",
   "version": "0.19.1",
   "release": "0.19.1",
-  "revision": 1,
+  "revision": 2,
   "revision_programs": "rebuilt",
-  "upstream_version": "0.19.1 (main 37941f06, 2026-11-12)",
+  "upstream_version": "0.19.1 (main c0ee120a, 2026-11-12)",
   "drawer": "GridCraft",
   "stack": 16777216,
   "tooltypes": [
-    "GUI_RENDERER=CPU"
+    "GUI_RENDERER=AUTO"
   ],
   "icon_source": "work:assets/app-icon/hicolor/64x64/apps/ai.storyteller.gridcraft.png",
-  "source_archive": "GridCraft-0.19.1-r1-source.zip",
+  "source_archive": "GridCraft-0.19.1-r2-source.zip",
   "source_archive_exclude": [
     "AGENTS.md",
-    "CLAUDE.md"
+    "CLAUDE.md",
+    "project.json"
   ],
   "notices": [
     "LICENSE-MIT",
@@ -25,7 +26,7 @@
   ],
   "targets": {
     "aros-x86_64-abiv11-pc": {
-      "system": "AROS x86_64, ABIv11 (AROS One 1.3)",
+      "system": "AROS x86_64, ABIv11 distributions",
       "sdk": "x86_64 ABIv11 SDK (deadwood2/AROS)",
       "notice": "notices/aros-x86_64-abiv11-pc.txt",
       "build": {
@@ -34,14 +35,14 @@
         "features": []
       },
       "limitations": [
-        "- OpenGL: AROS One 1.3 has only Mesa's software renderer, so AUTO uses",
-        "  CPU. GPU has not been tested in this release.",
+        "- OpenGL: tested on AROS One 1.3, which has only Mesa's software renderer,",
+        "  so AUTO uses CPU there. GPU has not been tested in this release.",
         "- Tested from a Shell with scripted edits; typing, the file requester and",
         "  the clipboard were tested on mainline AROS only."
       ]
     },
     "aros-x86_64-abiv1-pc": {
-      "system": "AROS x86_64, mainline ABIv1 (nightly 2026-11-10)",
+      "system": "AROS x86_64, mainline ABIv1 (nightly 2026-11-06 or later)",
       "sdk": "x86_64 mainline ABIv1 SDK of nightly 2026-11-10",
       "notice": "notices/aros-x86_64-abiv1-pc.txt",
       "build": {
@@ -50,12 +51,16 @@
         "features": []
       },
       "limitations": [
+        "- AUTO uses CPU on this system: a program that has opened OpenGL leaves its",
+        "  log file in use after it ends, and the Shell it ran in stops redirecting",
+        "  the output of later programs (seen on nightly 2026-11-10). GPU opens",
+        "  OpenGL all the same.",
         "- OpenGL: with Mesa's software renderer AUTO uses CPU. GPU and hardware",
         "  OpenGL drivers have not been tested in this release."
       ]
     },
     "aros-aarch64-abiv1-raspi": {
-      "system": "AROS on Raspberry Pi, AArch64 ABIv1 (mainline nightly 2026-11-10)",
+      "system": "AROS on Raspberry Pi, AArch64 ABIv1 (nightly 2026-11-06 or later)",
       "sdk": "Raspberry Pi AArch64 ABIv1 SDK of nightly 2026-11-10",
       "notice": "notices/aros-aarch64-abiv1-raspi.txt",
       "build": {
@@ -73,8 +78,8 @@
     }
   },
   "limitations": [
-    "- Every change redraws the whole window. On slow machines and in emulators",
-    "  the interface follows with a delay.",
+    "- Changes of the whole window (scrolling, zooming, opening a dialog) redraw",
+    "  all of it; on slow machines and in emulators these follow with a delay.",
     "- No printing: export to PDF instead. Files dropped on the window are not",
     "  opened.",
     "- All workbooks share one window; there is no separate window per workbook.",

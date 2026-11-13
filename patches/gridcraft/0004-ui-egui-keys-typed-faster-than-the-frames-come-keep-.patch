@@ -35,7 +35,7 @@ an editor that is already open).
  create mode 100644 crates/ui-egui/tests/type_to_edit_one_frame.rs
 
 diff --git a/crates/ui-egui/src/app.rs b/crates/ui-egui/src/app.rs
-index 62ece6a8d3efec58f0c1fc5c89d4edfb52dc71de..2c413abdbbfa8f809e56b2fadc4988000b3a8059 100644
+index 5ecc4768ed5a4fdd827302f64e605cf1ed774591..33fdfb1ff6c0cd41f38cc95801f1c87aea06e043 100644
 --- a/crates/ui-egui/src/app.rs
 +++ b/crates/ui-egui/src/app.rs
 @@ -44,6 +44,7 @@ impl SheetApp {
@@ -46,7 +46,7 @@ index 62ece6a8d3efec58f0c1fc5c89d4edfb52dc71de..2c413abdbbfa8f809e56b2fadc498800
              synthetic_pending: false,
              synthetic_injected_at_pass: None,
              control_rx: None,
-@@ -97,6 +98,29 @@ impl SheetApp {
+@@ -98,6 +99,29 @@ impl SheetApp {
          Self::setup_context_for_language(ctx, dark, i18n::Language::En);
      }
  
@@ -76,7 +76,7 @@ index 62ece6a8d3efec58f0c1fc5c89d4edfb52dc71de..2c413abdbbfa8f809e56b2fadc498800
      /// Sets up fonts and visuals for a specific persisted interface language.
      pub fn setup_context_for_language(ctx: &egui::Context, dark: bool, language: i18n::Language) {
          ctx.set_fonts(theme::font_definitions_for_language(language));
-@@ -105,6 +129,7 @@ impl SheetApp {
+@@ -106,6 +130,7 @@ impl SheetApp {
  
      /// Per-frame logic (control channel, screenshots). Call before `ui`.
      pub fn logic(&mut self, ctx: &egui::Context) {
@@ -85,7 +85,7 @@ index 62ece6a8d3efec58f0c1fc5c89d4edfb52dc71de..2c413abdbbfa8f809e56b2fadc498800
          // A keytip control request lives one frame: the ribbon consumes it during `ui`, and
          // anything that never reached a control (collapsed ribbon, tab switch) is dropped. One
 diff --git a/crates/ui-egui/src/grid.rs b/crates/ui-egui/src/grid.rs
-index 1a5d7162122213bf0ec29b5cb3ba1b0947d2a4b2..69cdeb61a13fffa6cf165260ec9bf42f6ad099bc 100644
+index 684b651fbc0d95fd4ad1ad4fca0fbfce8b7e4228..6cfa879b189af330c047e43822f2fd068342e731 100644
 --- a/crates/ui-egui/src/grid.rs
 +++ b/crates/ui-egui/src/grid.rs
 @@ -46,6 +46,7 @@ pub use editor::validation_arrow;
@@ -221,10 +221,10 @@ index a852d04c3350d3042e8ec97b467e80346301b491..50469cc6e03ef1d356a586996227c49c
 +    )
 +}
 diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
-index b9ec5245db621603342e66f0adbce88c5b81c24a..93d7a8d36a59b6e6bcedd4f6d308fb234fa09356 100644
+index 0bc3383881dd1e7c9fb179b603fe3636cbc33641..40ab9e1afe5aca8ba6397d051ed76fa121602772 100644
 --- a/crates/ui-egui/src/lib.rs
 +++ b/crates/ui-egui/src/lib.rs
-@@ -240,6 +240,8 @@ pub struct SheetApp {
+@@ -242,6 +242,8 @@ pub struct SheetApp {
      print_feedback_seen: Option<printing::Feedback>,
      /// Synthetic input from agents, one batch per step (drags need several steps).
      pub synthetic: std::collections::VecDeque<Vec<egui::Event>>,

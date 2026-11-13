@@ -3,4 +3,4 @@
 - [Download and installation](../README.md)
 - [Building](development.md)
 - [Patch workflow](patching.md)
-- [Current release](https://github.com/tomaszstaniak/aros-gridcraft/releases/tag/v0.19.1-r1)
+- [Current release](https://github.com/tomaszstaniak/aros-gridcraft/releases/tag/v0.19.1-r2)

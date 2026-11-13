@@ -81,9 +81,9 @@ The ToolType GUI_RENDERER in the program's icon, or the Shell argument
 priority; the icon is not read when the program is started from the Shell.
 Values ignore letter case.
 
-  CPU   the processor draws the interface; OpenGL is not opened (default)
   AUTO  OpenGL if it opens and is not Mesa's software renderer, otherwise
-        CPU; the reason is written to GridCraft.log
+        CPU; the reason is written to GridCraft.log (default)
+  CPU   the processor draws the interface; OpenGL is not opened
   GPU   OpenGL (the software renderer too), or the program stops with an
         error
 

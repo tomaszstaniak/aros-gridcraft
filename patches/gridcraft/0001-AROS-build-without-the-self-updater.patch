@@ -30,7 +30,7 @@ index 6486631b5ab8ba7fc5d8617b64fbca68f06740d9..d38b80cc729c0d7f0308eefc8fa80fee
  sys-locale = { workspace = true }
  craft-window = { workspace = true }
 diff --git a/crates/ui-egui/src/app.rs b/crates/ui-egui/src/app.rs
-index 94b6b01e7d85e237e02bd50a9f4a2b2b6289350b..62ece6a8d3efec58f0c1fc5c89d4edfb52dc71de 100644
+index 535c91a5c821c86eae587d1e45253124a76943db..5ecc4768ed5a4fdd827302f64e605cf1ed774591 100644
 --- a/crates/ui-egui/src/app.rs
 +++ b/crates/ui-egui/src/app.rs
 @@ -3,7 +3,7 @@ use super::clock::monotonic_ms;
@@ -42,7 +42,7 @@ index 94b6b01e7d85e237e02bd50a9f4a2b2b6289350b..62ece6a8d3efec58f0c1fc5c89d4edfb
  use super::updates_ui;
  use super::{
      CellRef, HashMap, INTERFACE_SCALE_MAX, INTERFACE_SCALE_MIN, Json, Notice, Perf, RangeRef, Session, SheetApp, UiRequest, UiState, backstage,
-@@ -83,7 +83,7 @@ impl SheetApp {
+@@ -84,7 +84,7 @@ impl SheetApp {
              parked: HashMap::new(),
              native_windows: false,
              arrange_windows: None,
@@ -51,7 +51,7 @@ index 94b6b01e7d85e237e02bd50a9f4a2b2b6289350b..62ece6a8d3efec58f0c1fc5c89d4edfb
              updates_rt: Default::default(),
          }
      }
-@@ -136,7 +136,7 @@ impl SheetApp {
+@@ -138,7 +138,7 @@ impl SheetApp {
          // frames still see worker completion. `ui` and the desktop app no longer poll it.
          self.poll_printing(ctx);
          self.guard_window_close(ctx);
@@ -60,7 +60,7 @@ index 94b6b01e7d85e237e02bd50a9f4a2b2b6289350b..62ece6a8d3efec58f0c1fc5c89d4edfb
          updates_ui::tick(self, ctx);
          // Files read asynchronously (web file picker, dropped files).
          self.poll_async_opens();
-@@ -208,7 +208,7 @@ impl SheetApp {
+@@ -210,7 +210,7 @@ impl SheetApp {
          }
          // The language the widgets translate with this frame (see `i18n::current`).
          i18n::set_current(&ctx, self.ui.language);
@@ -114,7 +114,7 @@ index 151374e6e461dce4ede19d42cdd5ec251f99d004..b92d9ad1913d603820af5536e7b43720
      }
  }
 diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
-index f2bcf3cf0585cc3f3efa6a83ea81bd577532b671..b9ec5245db621603342e66f0adbce88c5b81c24a 100644
+index ce7ce347b5165fc63c88b38abac8e0b46e93bdb0..0bc3383881dd1e7c9fb179b603fe3636cbc33641 100644
 --- a/crates/ui-egui/src/lib.rs
 +++ b/crates/ui-egui/src/lib.rs
 @@ -8,7 +8,7 @@
@@ -126,7 +126,7 @@ index f2bcf3cf0585cc3f3efa6a83ea81bd577532b671..b9ec5245db621603342e66f0adbce88c
  pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
      icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.gridcraft.png")),
      accent: Some([0x1f, 0x9d, 0x55]),
-@@ -55,7 +55,7 @@ pub mod tabs;
+@@ -56,7 +56,7 @@ pub mod tabs;
  pub mod text_box;
  mod text_direction;
  pub mod theme;
@@ -135,7 +135,7 @@ index f2bcf3cf0585cc3f3efa6a83ea81bd577532b671..b9ec5245db621603342e66f0adbce88c
  mod updates_ui;
  pub mod widgets;
  mod window_ui;
-@@ -322,7 +322,7 @@ pub struct SheetApp {
+@@ -326,7 +326,7 @@ pub struct SheetApp {
      /// View › Arrange All's layout and windows, waiting for the native windows to move.
      pub arrange_windows: Option<(String, Vec<u64>)>,
      /// The update check, the startup prompt and a running self-update (desktop only).

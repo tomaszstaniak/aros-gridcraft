@@ -26,7 +26,7 @@ Tests: tests/save_jobs.rs (13). Not covered by a test: the window close held bac
  create mode 100644 crates/ui-egui/tests/save_jobs.rs
 
 diff --git a/crates/ui-egui/src/app.rs b/crates/ui-egui/src/app.rs
-index dc0680233a40b21cbc6869d21b315a4eefa9171e..684edfdf54f7c93a1aa92fcb5e4d80eddde9f69b 100644
+index 33fdfb1ff6c0cd41f38cc95801f1c87aea06e043..6acb7f7299d097af824de0e9aaa9ab189cf6ba20 100644
 --- a/crates/ui-egui/src/app.rs
 +++ b/crates/ui-egui/src/app.rs
 @@ -64,6 +64,8 @@ impl SheetApp {
@@ -35,10 +35,10 @@ index dc0680233a40b21cbc6869d21b315a4eefa9171e..684edfdf54f7c93a1aa92fcb5e4d80ed
              desktop_theme: desktop_theme::DesktopTheme::default(),
 +            save_jobs: Default::default(),
 +            wake_ctx: None,
-             chart_cache: Default::default(),
              desktop_dark: None,
              name_box: None,
-@@ -169,6 +171,10 @@ impl SheetApp {
+             keytips: keytips::KeyTips::default(),
+@@ -162,6 +164,10 @@ impl SheetApp {
          // Printing feedback is polled once per frame, here, so hidden windows and logic-only
          // frames still see worker completion. `ui` and the desktop app no longer poll it.
          self.poll_printing(ctx);
@@ -147,10 +147,10 @@ index 602d5ccdfaa5192133c45dcaa06ba01b495efb57..8a9243e1d4c152b81aa0295d37fafeaa
      let f = |k: &str| p.get(k).and_then(Json::as_f64).unwrap_or(0.0) as f32;
      let out = match method {
 diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
-index b51f072c0f6ab68f0eb62b3d798e0dd2cd4ca836..d566b4aaee56f13a41c2b3fa3bd274f2f20170f2 100644
+index 40ab9e1afe5aca8ba6397d051ed76fa121602772..24ce521a0903571689633a8ea0ba9aa7ec0990e3 100644
 --- a/crates/ui-egui/src/lib.rs
 +++ b/crates/ui-egui/src/lib.rs
-@@ -74,11 +74,12 @@ pub use control::{ControlRequest, ControlResponse};
+@@ -75,11 +75,12 @@ pub use control::{ControlRequest, ControlResponse};
  
  mod app;
  mod clock;
@@ -164,7 +164,7 @@ index b51f072c0f6ab68f0eb62b3d798e0dd2cd4ca836..d566b4aaee56f13a41c2b3fa3bd274f2
  pub use state::{NoticeKind, OpenWindow, SaveAnswer, SheetView};
  pub mod desktop_theme;
  
-@@ -272,6 +273,10 @@ pub struct SheetApp {
+@@ -273,6 +274,10 @@ pub struct SheetApp {
      effective_dark: bool,
      /// The desktop's light/dark choice, watched while the app runs (Linux has no winit answer).
      desktop_theme: desktop_theme::DesktopTheme,
@@ -172,9 +172,9 @@ index b51f072c0f6ab68f0eb62b3d798e0dd2cd4ca836..d566b4aaee56f13a41c2b3fa3bd274f2
 +    save_jobs: save_jobs::SaveJobs,
 +    /// The context of the window, for a worker to ask for a frame when it is done.
 +    wake_ctx: Option<egui::Context>,
-     /// Charts' drawing primitives, kept while their workbook and layout stay the same.
-     chart_cache: std::cell::RefCell<chart_cache::ChartCache>,
      /// The last answer [`desktop_theme`] gave, so a frame that asks costs nothing.
+     desktop_dark: Option<bool>,
+     pub name_box: Option<String>,
 diff --git a/crates/ui-egui/src/save_jobs.rs b/crates/ui-egui/src/save_jobs.rs
 new file mode 100644
 index 0000000000000000000000000000000000000000..44fd112e85fbbd1c3bf752196fe3a0e9ea7554d6
